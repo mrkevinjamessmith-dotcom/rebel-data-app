@@ -142,6 +142,72 @@ def get_connection():
 
 
 # ==================================================
+# ACCOUNTANT / AUDITOR FILTER VALUES
+# ==================================================
+
+@st.cache_data(ttl=3600)
+def get_accountants():
+
+    conn = get_connection()
+
+    try:
+
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT DISTINCT AccountantName
+            FROM dbo.vw_RebelCompanies
+            WHERE AccountantName IS NOT NULL
+              AND LTRIM(RTRIM(AccountantName)) <> ''
+            ORDER BY AccountantName
+        """)
+
+        values = [
+            row[0]
+            for row in cursor.fetchall()
+        ]
+
+        cursor.close()
+
+    finally:
+
+        conn.close()
+
+    return values
+
+
+@st.cache_data(ttl=3600)
+def get_auditors():
+
+    conn = get_connection()
+
+    try:
+
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT DISTINCT AuditorName
+            FROM dbo.vw_RebelCompanies
+            WHERE AuditorName IS NOT NULL
+              AND LTRIM(RTRIM(AuditorName)) <> ''
+            ORDER BY AuditorName
+        """)
+
+        values = [
+            row[0]
+            for row in cursor.fetchall()
+        ]
+
+        cursor.close()
+
+    finally:
+
+        conn.close()
+
+    return values
+
+
+# ==================================================
 # DATABASE SEARCH
 # ==================================================
 
@@ -195,9 +261,7 @@ def search_companies(
     params = []
 
 
-    # ----------------------------------------------
     # COMPANY NAME
-    # ----------------------------------------------
 
     if company_name:
 
@@ -210,9 +274,7 @@ def search_companies(
         )
 
 
-    # ----------------------------------------------
     # COMPANY NUMBER
-    # ----------------------------------------------
 
     if company_number:
 
@@ -225,9 +287,7 @@ def search_companies(
         )
 
 
-    # ----------------------------------------------
     # COMPANY STATUS
-    # ----------------------------------------------
 
     if company_status != "All":
 
@@ -240,9 +300,7 @@ def search_companies(
         )
 
 
-    # ----------------------------------------------
     # SIC
-    # ----------------------------------------------
 
     if sic:
 
@@ -268,9 +326,7 @@ def search_companies(
         )
 
 
-    # ----------------------------------------------
     # LOCATION
-    # ----------------------------------------------
 
     if location:
 
@@ -294,39 +350,33 @@ def search_companies(
         )
 
 
-    # ----------------------------------------------
     # ACCOUNTANT
-    # ----------------------------------------------
 
-    if accountant:
+    if accountant != "All":
 
         sql += """
-            AND AccountantName LIKE %s
+            AND AccountantName = %s
         """
 
         params.append(
-            f"%{accountant}%"
+            accountant
         )
 
 
-    # ----------------------------------------------
     # AUDITOR
-    # ----------------------------------------------
 
-    if auditor:
+    if auditor != "All":
 
         sql += """
-            AND AuditorName LIKE %s
+            AND AuditorName = %s
         """
 
         params.append(
-            f"%{auditor}%"
+            auditor
         )
 
 
-    # ----------------------------------------------
     # MIN EMPLOYEES
-    # ----------------------------------------------
 
     if min_employees > 0:
 
@@ -339,9 +389,7 @@ def search_companies(
         )
 
 
-    # ----------------------------------------------
     # MAX EMPLOYEES
-    # ----------------------------------------------
 
     if max_employees > 0:
 
@@ -354,18 +402,12 @@ def search_companies(
         )
 
 
-    # ----------------------------------------------
-    # ORDER
-    # ----------------------------------------------
-
     sql += """
         ORDER BY CompanyName
     """
 
 
-    # ----------------------------------------------
     # RUN QUERY
-    # ----------------------------------------------
 
     conn = get_connection()
 
@@ -431,12 +473,8 @@ def show_header(show_logout=False):
         st.markdown(
             """
             <div class="rebel-logo">
-                <span class="rebel-green">
-                    Rebel
-                </span>
-                <span class="rebel-white">
-                    Data
-                </span>
+                <span class="rebel-green">Rebel</span>
+                <span class="rebel-white"> Data</span>
             </div>
 
             <div class="rebel-subtitle">
@@ -658,6 +696,27 @@ st.markdown(
 
 
 # ==================================================
+# LOAD SEARCHABLE FILTER VALUES
+# ==================================================
+
+try:
+
+    accountant_options = get_accountants()
+    auditor_options = get_auditors()
+
+except Exception as e:
+
+    st.error(
+        "Unable to load Accountant and Auditor lists."
+    )
+
+    st.exception(e)
+
+    accountant_options = []
+    auditor_options = []
+
+
+# ==================================================
 # COMPANY SEARCH
 # ==================================================
 
@@ -675,10 +734,7 @@ with st.form(
     "company_search_form"
 ):
 
-
-    # ----------------------------------------------
     # ROW 1
-    # ----------------------------------------------
 
     col1, col2, col3 = st.columns(3)
 
@@ -708,9 +764,7 @@ with st.form(
         )
 
 
-    # ----------------------------------------------
     # ROW 2
-    # ----------------------------------------------
 
     col1, col2, col3 = st.columns(3)
 
@@ -718,7 +772,7 @@ with st.form(
 
         sic = st.text_input(
             "SIC Code / Industry",
-            placeholder="e.g. 69201 or Accountancy"
+            placeholder="e.g. 69201"
         )
 
     with col2:
@@ -730,15 +784,14 @@ with st.form(
 
     with col3:
 
-        accountant = st.text_input(
+        accountant = st.selectbox(
             "Accountant",
-            placeholder="e.g. Smith"
+            ["All"] + accountant_options,
+            index=0
         )
 
 
-    # ----------------------------------------------
     # ROW 3
-    # ----------------------------------------------
 
     col1, col2, col3 = st.columns(3)
 
@@ -762,15 +815,12 @@ with st.form(
 
     with col3:
 
-        auditor = st.text_input(
+        auditor = st.selectbox(
             "Auditor",
-            placeholder="e.g. Grant"
+            ["All"] + auditor_options,
+            index=0
         )
 
-
-    # ----------------------------------------------
-    # SEARCH BUTTON
-    # ----------------------------------------------
 
     search = (
         st.form_submit_button(
@@ -785,15 +835,14 @@ with st.form(
 
 if search:
 
-    # Prevent accidental massive searches
     no_filters = (
         not company_name
         and not company_number
         and company_status == "All"
         and not sic
         and not location
-        and not accountant
-        and not auditor
+        and accountant == "All"
+        and auditor == "All"
         and min_employees == 0
         and max_employees == 0
     )
