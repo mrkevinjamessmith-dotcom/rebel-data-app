@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import pyodbc
 
 # ==================================================
 # PAGE SETUP
@@ -121,6 +122,131 @@ st.markdown(
 )
 
 # ==================================================
+# DATABASE
+# ==================================================
+
+def get_connection():
+    return pyodbc.connect(
+        "DRIVER={ODBC Driver 18 for SQL Server};"
+        f"SERVER={st.secrets['database']['server']};"
+        f"DATABASE={st.secrets['database']['database']};"
+        f"UID={st.secrets['database']['username']};"
+        f"PWD={st.secrets['database']['password']};"
+        "Encrypt=yes;"
+        "TrustServerCertificate=no;"
+    )
+
+
+def search_companies(
+    company_name,
+    company_number,
+    company_status,
+    sic,
+    location,
+    accountant,
+    auditor,
+    min_employees,
+    max_employees
+):
+
+    sql = """
+    SELECT TOP 1000
+        CompanyNumber AS [Company Number],
+        CompanyName AS [Company Name],
+        CompanyStatus AS [Company Status],
+        SIC1 AS [SIC 1],
+        SIC2 AS [SIC 2],
+        SIC3 AS [SIC 3],
+        SIC4 AS [SIC 4],
+        PostTown AS [Town],
+        County,
+        PostCode AS [Postcode],
+        Employees,
+        AccountantName AS [Accountant],
+        AuditorName AS [Auditor]
+    FROM dbo.vw_RebelCompanies
+    WHERE 1 = 1
+    """
+
+    params = []
+
+    if company_name:
+        sql += " AND CompanyName LIKE ?"
+        params.append(f"%{company_name}%")
+
+    if company_number:
+        sql += " AND CompanyNumber LIKE ?"
+        params.append(f"%{company_number}%")
+
+    if company_status != "All":
+        sql += " AND CompanyStatus = ?"
+        params.append(company_status)
+
+    if sic:
+        sql += """
+        AND (
+            SIC1 LIKE ?
+            OR SIC2 LIKE ?
+            OR SIC3 LIKE ?
+            OR SIC4 LIKE ?
+        )
+        """
+        sic_search = f"%{sic}%"
+        params.extend([
+            sic_search,
+            sic_search,
+            sic_search,
+            sic_search
+        ])
+
+    if location:
+        sql += """
+        AND (
+            PostTown LIKE ?
+            OR County LIKE ?
+            OR PostCode LIKE ?
+        )
+        """
+        location_search = f"%{location}%"
+        params.extend([
+            location_search,
+            location_search,
+            location_search
+        ])
+
+    if accountant:
+        sql += " AND AccountantName LIKE ?"
+        params.append(f"%{accountant}%")
+
+    if auditor:
+        sql += " AND AuditorName LIKE ?"
+        params.append(f"%{auditor}%")
+
+    if min_employees > 0:
+        sql += " AND Employees >= ?"
+        params.append(min_employees)
+
+    if max_employees > 0:
+        sql += " AND Employees <= ?"
+        params.append(max_employees)
+
+    sql += " ORDER BY CompanyName"
+
+    conn = get_connection()
+
+    try:
+        results = pd.read_sql_query(
+            sql,
+            conn,
+            params=params
+        )
+    finally:
+        conn.close()
+
+    return results
+
+
+# ==================================================
 # SESSION STATE
 # ==================================================
 
@@ -135,6 +261,7 @@ if "name" not in st.session_state:
 
 if "client" not in st.session_state:
     st.session_state["client"] = None
+
 
 # ==================================================
 # HEADER
@@ -210,6 +337,7 @@ def show_header(show_logout=False):
         unsafe_allow_html=True
     )
 
+
 # ==================================================
 # LOGIN SCREEN
 # ==================================================
@@ -238,9 +366,7 @@ if not st.session_state["authenticated"]:
 
         with st.form("login_form"):
 
-            username = st.text_input(
-                "Username"
-            )
+            username = st.text_input("Username")
 
             password = st.text_input(
                 "Password",
@@ -282,6 +408,7 @@ if not st.session_state["authenticated"]:
 
     st.stop()
 
+
 # ==================================================
 # MAIN APP
 # ==================================================
@@ -302,99 +429,6 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# ==================================================
-# DEMO DATA
-# ==================================================
-
-data = [
-
-    {
-        "Company Number": "01234567",
-        "Company Name": "ABC CONSULTING LIMITED",
-        "Company Status": "Active",
-        "SIC Code": "70229",
-        "Industry": "Management Consultancy",
-        "Location": "Gloucester",
-        "Postcode": "GL1 1AA",
-        "Employees": 24,
-        "Turnover": 3200000,
-        "Accountant": "SMITH & CO",
-        "Auditor": "GRANT & PARTNERS"
-    },
-
-    {
-        "Company Number": "02345678",
-        "Company Name": "BRISTOL TECHNOLOGY LIMITED",
-        "Company Status": "Active",
-        "SIC Code": "62020",
-        "Industry": "Information Technology",
-        "Location": "Bristol",
-        "Postcode": "BS1 4AB",
-        "Employees": 51,
-        "Turnover": 7800000,
-        "Accountant": "WEST ACCOUNTANCY LLP",
-        "Auditor": "TECH AUDIT LLP"
-    },
-
-    {
-        "Company Number": "03456789",
-        "Company Name": "COTSWOLD SERVICES LIMITED",
-        "Company Status": "Active",
-        "SIC Code": "82990",
-        "Industry": "Business Services",
-        "Location": "Cheltenham",
-        "Postcode": "GL50 1AA",
-        "Employees": 17,
-        "Turnover": 1700000,
-        "Accountant": "HAZELWOOD ACCOUNTANTS",
-        "Auditor": ""
-    },
-
-    {
-        "Company Number": "04567890",
-        "Company Name": "REBEL MARKETING LIMITED",
-        "Company Status": "Active",
-        "SIC Code": "73110",
-        "Industry": "Advertising",
-        "Location": "London",
-        "Postcode": "EC1A 1BB",
-        "Employees": 83,
-        "Turnover": 12400000,
-        "Accountant": "CITY ACCOUNTANTS LLP",
-        "Auditor": "LONDON AUDIT LLP"
-    },
-
-    {
-        "Company Number": "05678901",
-        "Company Name": "MIDLAND ENGINEERING LIMITED",
-        "Company Status": "Active",
-        "SIC Code": "71129",
-        "Industry": "Engineering",
-        "Location": "Birmingham",
-        "Postcode": "B1 1AA",
-        "Employees": 142,
-        "Turnover": 28600000,
-        "Accountant": "MIDLANDS FINANCE LLP",
-        "Auditor": "CENTRAL AUDIT LLP"
-    },
-
-    {
-        "Company Number": "06789012",
-        "Company Name": "GLOUCESTER ACCOUNTANCY LIMITED",
-        "Company Status": "Active",
-        "SIC Code": "69201",
-        "Industry": "Accounting and Auditing",
-        "Location": "Gloucester",
-        "Postcode": "GL2 5AA",
-        "Employees": 36,
-        "Turnover": 4600000,
-        "Accountant": "INTERNAL",
-        "Auditor": "WESTERN AUDIT LLP"
-    }
-
-]
-
-df = pd.DataFrame(data)
 
 # ==================================================
 # COMPANY SEARCH
@@ -437,8 +471,8 @@ with st.form("company_search_form"):
 
     with col1:
         sic = st.text_input(
-            "SIC Code / Industry",
-            placeholder="e.g. 69201 or Accountancy"
+            "SIC Code",
+            placeholder="e.g. 69201"
         )
 
     with col2:
@@ -477,128 +511,43 @@ with st.form("company_search_form"):
             placeholder="e.g. Grant"
         )
 
-    col1, col2 = st.columns(2)
-
-    with col1:
-        min_turnover = st.number_input(
-            "Minimum Turnover (£)",
-            min_value=0,
-            value=0,
-            step=100000
-        )
-
-    with col2:
-        max_turnover = st.number_input(
-            "Maximum Turnover (£)",
-            min_value=0,
-            value=0,
-            step=100000
-        )
-
     search = st.form_submit_button(
         "SEARCH COMPANIES"
     )
 
+
 # ==================================================
-# FILTER RESULTS
+# SEARCH AZURE
 # ==================================================
 
 if search:
 
-    results = df.copy()
+    try:
 
-    if company_name:
-        results = results[
-            results["Company Name"].str.contains(
+        with st.spinner("Searching Rebel Data..."):
+
+            results = search_companies(
                 company_name,
-                case=False,
-                na=False
-            )
-        ]
-
-    if company_number:
-        results = results[
-            results["Company Number"].str.contains(
                 company_number,
-                case=False,
-                na=False
-            )
-        ]
-
-    if company_status != "All":
-        results = results[
-            results["Company Status"] == company_status
-        ]
-
-    if sic:
-        results = results[
-            results["SIC Code"].str.contains(
+                company_status,
                 sic,
-                case=False,
-                na=False
-            )
-            |
-            results["Industry"].str.contains(
-                sic,
-                case=False,
-                na=False
-            )
-        ]
-
-    if location:
-        results = results[
-            results["Location"].str.contains(
                 location,
-                case=False,
-                na=False
-            )
-            |
-            results["Postcode"].str.contains(
-                location,
-                case=False,
-                na=False
-            )
-        ]
-
-    if accountant:
-        results = results[
-            results["Accountant"].str.contains(
                 accountant,
-                case=False,
-                na=False
-            )
-        ]
-
-    if auditor:
-        results = results[
-            results["Auditor"].str.contains(
                 auditor,
-                case=False,
-                na=False
+                min_employees,
+                max_employees
             )
-        ]
 
-    if min_employees > 0:
-        results = results[
-            results["Employees"] >= min_employees
-        ]
+        st.session_state["results"] = results
 
-    if max_employees > 0:
-        results = results[
-            results["Employees"] <= max_employees
-        ]
+    except Exception as e:
 
-    if min_turnover > 0:
-        results = results[
-            results["Turnover"] >= min_turnover
-        ]
+        st.error(
+            "Unable to search the Rebel Data database."
+        )
 
-    if max_turnover > 0:
-        results = results[
-            results["Turnover"] <= max_turnover
-        ]
+        st.exception(e)
 
-    st.session_state["results"] = results
 
 # ==================================================
 # RESULTS
@@ -618,16 +567,15 @@ if "results" in st.session_state:
         f"{len(results):,}"
     )
 
-    display_df = results.copy()
+    if len(results) == 1000:
 
-    display_df["Turnover"] = display_df[
-        "Turnover"
-    ].apply(
-        lambda x: f"£{x:,.0f}"
-    )
+        st.info(
+            "Showing the first 1,000 matching companies. "
+            "Refine your search to narrow the results."
+        )
 
     st.dataframe(
-        display_df,
+        results,
         use_container_width=True,
         hide_index=True
     )
@@ -642,6 +590,7 @@ if "results" in st.session_state:
         file_name="rebel_data_selection.csv",
         mime="text/csv"
     )
+
 
 # ==================================================
 # FOOTER
