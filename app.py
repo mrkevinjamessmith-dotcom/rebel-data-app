@@ -402,6 +402,8 @@ def search_companies(
         )
 
 
+    # ORDER
+
     sql += """
         ORDER BY CompanyName
     """
@@ -464,9 +466,7 @@ if "client" not in st.session_state:
 
 def show_header(show_logout=False):
 
-    col1, col2 = st.columns(
-        [4, 1]
-    )
+    col1, col2 = st.columns([4, 1])
 
     with col1:
 
@@ -490,55 +490,29 @@ def show_header(show_logout=False):
 
             if st.session_state["client"]:
 
+                name = st.session_state["name"]
+                client = st.session_state["client"]
+
                 st.markdown(
-                    f"""
-                    <div style="
-                        text-align:right;
-                        color:white;
-                        font-size:14px;
-                        margin-bottom:8px;
-                    ">
-
-                        {st.session_state["name"]}
-
-                        <br>
-
-                        <span style="
-                            color:#8bd02f;
-                        ">
-                            {st.session_state["client"]}
-                        </span>
-
-                    </div>
-                    """,
+                    f"""<div style="text-align:right; color:white; font-size:14px; margin-bottom:8px;">
+{name}<br>
+<span style="color:#8bd02f; font-weight:700;">{client}</span>
+</div>""",
                     unsafe_allow_html=True
                 )
 
             if st.button(
-                "LOG OUT"
+                "LOG OUT",
+                use_container_width=True
             ):
 
-                st.session_state[
-                    "authenticated"
-                ] = False
-
-                st.session_state[
-                    "username"
-                ] = None
-
-                st.session_state[
-                    "name"
-                ] = None
-
-                st.session_state[
-                    "client"
-                ] = None
+                st.session_state["authenticated"] = False
+                st.session_state["username"] = None
+                st.session_state["name"] = None
+                st.session_state["client"] = None
 
                 if "results" in st.session_state:
-
-                    del st.session_state[
-                        "results"
-                    ]
+                    del st.session_state["results"]
 
                 st.rerun()
 
@@ -569,9 +543,7 @@ def show_header(show_logout=False):
 # LOGIN SCREEN
 # ==================================================
 
-if not st.session_state[
-    "authenticated"
-]:
+if not st.session_state["authenticated"]:
 
     show_header()
 
@@ -630,10 +602,7 @@ if not st.session_state[
                         username
                     ]
 
-                    if (
-                        password
-                        == user["password"]
-                    ):
+                    if password == user["password"]:
 
                         st.session_state[
                             "authenticated"
@@ -821,6 +790,8 @@ with st.form(
             index=0
         )
 
+
+    # SEARCH BUTTON
 
     search = (
         st.form_submit_button(
