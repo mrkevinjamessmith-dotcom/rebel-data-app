@@ -121,14 +121,31 @@ st.markdown(
 )
 
 # ==================================================
-# HEADER FUNCTION
+# SESSION STATE
+# ==================================================
+
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+
+if "username" not in st.session_state:
+    st.session_state["username"] = None
+
+if "name" not in st.session_state:
+    st.session_state["name"] = None
+
+if "client" not in st.session_state:
+    st.session_state["client"] = None
+
+# ==================================================
+# HEADER
 # ==================================================
 
 def show_header(show_logout=False):
 
-    header_col1, header_col2 = st.columns([4, 1])
+    col1, col2 = st.columns([4, 1])
 
-    with header_col1:
+    with col1:
+
         st.markdown(
             '<div class="rebel-logo">'
             '<span class="rebel-green">Rebel</span> '
@@ -140,12 +157,37 @@ def show_header(show_logout=False):
             unsafe_allow_html=True
         )
 
-    with header_col2:
+    with col2:
 
         if show_logout:
 
+            if st.session_state["client"]:
+
+                st.markdown(
+                    f'<div style="'
+                    f'text-align:right;'
+                    f'color:white;'
+                    f'font-size:14px;'
+                    f'margin-bottom:8px;'
+                    f'">'
+                    f'{st.session_state["name"]}<br>'
+                    f'<span style="color:#8bd02f;">'
+                    f'{st.session_state["client"]}'
+                    f'</span>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
             if st.button("LOG OUT"):
+
                 st.session_state["authenticated"] = False
+                st.session_state["username"] = None
+                st.session_state["name"] = None
+                st.session_state["client"] = None
+
+                if "results" in st.session_state:
+                    del st.session_state["results"]
+
                 st.rerun()
 
         else:
@@ -169,13 +211,6 @@ def show_header(show_logout=False):
     )
 
 # ==================================================
-# LOGIN STATE
-# ==================================================
-
-if "authenticated" not in st.session_state:
-    st.session_state["authenticated"] = False
-
-# ==================================================
 # LOGIN SCREEN
 # ==================================================
 
@@ -197,9 +232,9 @@ if not st.session_state["authenticated"]:
         unsafe_allow_html=True
     )
 
-    login_col1, login_col2, login_col3 = st.columns([1, 1.3, 1])
+    col1, col2, col3 = st.columns([1, 1.3, 1])
 
-    with login_col2:
+    with col2:
 
         with st.form("login_form"):
 
@@ -218,16 +253,26 @@ if not st.session_state["authenticated"]:
 
             if login_button:
 
-                correct_username = st.secrets["login"]["username"]
-                correct_password = st.secrets["login"]["password"]
+                users = st.secrets["users"]
 
-                if (
-                    username == correct_username
-                    and password == correct_password
-                ):
+                if username in users:
 
-                    st.session_state["authenticated"] = True
-                    st.rerun()
+                    user = users[username]
+
+                    if password == user["password"]:
+
+                        st.session_state["authenticated"] = True
+                        st.session_state["username"] = username
+                        st.session_state["name"] = user["name"]
+                        st.session_state["client"] = user["client"]
+
+                        st.rerun()
+
+                    else:
+
+                        st.error(
+                            "Incorrect username or password."
+                        )
 
                 else:
 
