@@ -11,22 +11,19 @@ st.set_page_config(
     layout="wide"
 )
 
-
 # ==================================================
-# REBEL DATA BRANDING / CSS
+# BRANDING / CSS
 # ==================================================
 
 st.markdown(
     """
     <style>
 
-    /* Main background */
     .stApp {
         background-color: #3d3d3f;
         color: white;
     }
 
-    /* Hide Streamlit menu and footer */
     #MainMenu {
         visibility: hidden;
     }
@@ -35,14 +32,12 @@ st.markdown(
         visibility: hidden;
     }
 
-    /* Main page area */
     .block-container {
         padding-top: 3rem !important;
         padding-bottom: 3rem !important;
         max-width: 1450px;
     }
 
-    /* Logo */
     .rebel-logo {
         font-size: 40px;
         font-weight: 800;
@@ -63,7 +58,6 @@ st.markdown(
         margin-top: 6px;
     }
 
-    /* Hero */
     .hero-title {
         font-size: 44px;
         font-weight: 800;
@@ -78,7 +72,6 @@ st.markdown(
         margin-bottom: 35px;
     }
 
-    /* Section titles */
     .section-title {
         font-size: 28px;
         font-weight: 800;
@@ -87,29 +80,20 @@ st.markdown(
         margin-bottom: 15px;
     }
 
-    /* Input labels */
     label {
         color: white !important;
         font-weight: 600 !important;
     }
 
-    /* Search button */
-    div[data-testid="stFormSubmitButton"] button {
+    div[data-testid="stFormSubmitButton"] button,
+    div[data-testid="stButton"] button {
         background-color: #8bd02f !important;
         color: #222222 !important;
         border: none !important;
         border-radius: 5px !important;
         font-weight: 800 !important;
-        padding: 0.7rem 2rem !important;
     }
 
-    div[data-testid="stFormSubmitButton"] button:hover {
-        background-color: #9be33b !important;
-        color: #222222 !important;
-        border: none !important;
-    }
-
-    /* Download button */
     div[data-testid="stDownloadButton"] button {
         background-color: #8bd02f !important;
         color: #222222 !important;
@@ -118,13 +102,6 @@ st.markdown(
         font-weight: 800 !important;
     }
 
-    div[data-testid="stDownloadButton"] button:hover {
-        background-color: #9be33b !important;
-        color: #222222 !important;
-        border: none !important;
-    }
-
-    /* Results metric */
     [data-testid="stMetricValue"] {
         color: #8bd02f !important;
         font-weight: 800 !important;
@@ -134,7 +111,6 @@ st.markdown(
         color: white !important;
     }
 
-    /* Horizontal lines */
     hr {
         border-color: #5a5a5c !important;
     }
@@ -144,52 +120,128 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-
 # ==================================================
-# HEADER
+# HEADER FUNCTION
 # ==================================================
 
-header_col1, header_col2 = st.columns([4, 1])
+def show_header(show_logout=False):
 
-with header_col1:
+    header_col1, header_col2 = st.columns([4, 1])
+
+    with header_col1:
+        st.markdown(
+            '<div class="rebel-logo">'
+            '<span class="rebel-green">Rebel</span> '
+            '<span class="rebel-white">Data</span>'
+            '</div>'
+            '<div class="rebel-subtitle">'
+            'UK Business Intelligence'
+            '</div>',
+            unsafe_allow_html=True
+        )
+
+    with header_col2:
+
+        if show_logout:
+
+            if st.button("LOG OUT"):
+                st.session_state["authenticated"] = False
+                st.rerun()
+
+        else:
+
+            st.markdown(
+                '<div style="'
+                'text-align:right;'
+                'color:#8bd02f;'
+                'font-size:14px;'
+                'font-weight:800;'
+                'padding-top:12px;'
+                '">'
+                'CLIENT PORTAL'
+                '</div>',
+                unsafe_allow_html=True
+            )
 
     st.markdown(
-        '<div class="rebel-logo">'
-        '<span class="rebel-green">Rebel</span> '
-        '<span class="rebel-white">Data</span>'
-        '</div>'
-        '<div class="rebel-subtitle">'
-        'UK Business Intelligence'
+        "<hr>",
+        unsafe_allow_html=True
+    )
+
+# ==================================================
+# LOGIN STATE
+# ==================================================
+
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+
+# ==================================================
+# LOGIN SCREEN
+# ==================================================
+
+if not st.session_state["authenticated"]:
+
+    show_header()
+
+    st.markdown(
+        '<div class="hero-title">'
+        'Welcome to Rebel Data.'
         '</div>',
         unsafe_allow_html=True
     )
 
-
-with header_col2:
-
     st.markdown(
-        '<div style="'
-        'text-align:right;'
-        'color:#8bd02f;'
-        'font-size:14px;'
-        'font-weight:800;'
-        'padding-top:12px;'
-        '">'
-        'COMPANY SEARCH'
+        '<div class="hero-subtitle">'
+        'Sign in to access the Rebel Data client portal.'
         '</div>',
         unsafe_allow_html=True
     )
 
+    login_col1, login_col2, login_col3 = st.columns([1, 1.3, 1])
 
-st.markdown(
-    "<hr>",
-    unsafe_allow_html=True
-)
+    with login_col2:
 
+        with st.form("login_form"):
+
+            username = st.text_input(
+                "Username"
+            )
+
+            password = st.text_input(
+                "Password",
+                type="password"
+            )
+
+            login_button = st.form_submit_button(
+                "SIGN IN"
+            )
+
+            if login_button:
+
+                correct_username = st.secrets["login"]["username"]
+                correct_password = st.secrets["login"]["password"]
+
+                if (
+                    username == correct_username
+                    and password == correct_password
+                ):
+
+                    st.session_state["authenticated"] = True
+                    st.rerun()
+
+                else:
+
+                    st.error(
+                        "Incorrect username or password."
+                    )
+
+    st.stop()
 
 # ==================================================
-# HERO
+# MAIN APP
 # ==================================================
+
+show_header(show_logout=True)
 
 st.markdown(
     '<div class="hero-title">'
@@ -198,14 +250,12 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-
 st.markdown(
     '<div class="hero-subtitle">'
     'Search and select UK companies using Rebel Data.'
     '</div>',
     unsafe_allow_html=True
 )
-
 
 # ==================================================
 # DEMO DATA
@@ -299,9 +349,7 @@ data = [
 
 ]
 
-
 df = pd.DataFrame(data)
-
 
 # ==================================================
 # COMPANY SEARCH
@@ -314,35 +362,23 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-
 with st.form("company_search_form"):
-
-
-    # --------------------------------------------------
-    # ROW 1
-    # --------------------------------------------------
 
     col1, col2, col3 = st.columns(3)
 
-
     with col1:
-
         company_name = st.text_input(
             "Company Name",
             placeholder="e.g. Rebel"
         )
 
-
     with col2:
-
         company_number = st.text_input(
             "Company Number",
             placeholder="e.g. 01234567"
         )
 
-
     with col3:
-
         company_status = st.selectbox(
             "Company Status",
             [
@@ -352,47 +388,29 @@ with st.form("company_search_form"):
             ]
         )
 
-
-    # --------------------------------------------------
-    # ROW 2
-    # --------------------------------------------------
-
     col1, col2, col3 = st.columns(3)
 
-
     with col1:
-
         sic = st.text_input(
             "SIC Code / Industry",
             placeholder="e.g. 69201 or Accountancy"
         )
 
-
     with col2:
-
         location = st.text_input(
             "Location / Postcode",
             placeholder="e.g. GL or Gloucester"
         )
 
-
     with col3:
-
         accountant = st.text_input(
             "Accountant",
             placeholder="e.g. Smith"
         )
 
-
-    # --------------------------------------------------
-    # ROW 3
-    # --------------------------------------------------
-
     col1, col2, col3 = st.columns(3)
 
-
     with col1:
-
         min_employees = st.number_input(
             "Minimum Employees",
             min_value=0,
@@ -400,9 +418,7 @@ with st.form("company_search_form"):
             step=1
         )
 
-
     with col2:
-
         max_employees = st.number_input(
             "Maximum Employees",
             min_value=0,
@@ -410,24 +426,15 @@ with st.form("company_search_form"):
             step=1
         )
 
-
     with col3:
-
         auditor = st.text_input(
             "Auditor",
             placeholder="e.g. Grant"
         )
 
-
-    # --------------------------------------------------
-    # ROW 4
-    # --------------------------------------------------
-
     col1, col2 = st.columns(2)
 
-
     with col1:
-
         min_turnover = st.number_input(
             "Minimum Turnover (£)",
             min_value=0,
@@ -435,9 +442,7 @@ with st.form("company_search_form"):
             step=100000
         )
 
-
     with col2:
-
         max_turnover = st.number_input(
             "Maximum Turnover (£)",
             min_value=0,
@@ -445,16 +450,9 @@ with st.form("company_search_form"):
             step=100000
         )
 
-
-    # --------------------------------------------------
-    # SEARCH BUTTON
-    # --------------------------------------------------
-
     search = st.form_submit_button(
-        "SEARCH COMPANIES",
-        type="primary"
+        "SEARCH COMPANIES"
     )
-
 
 # ==================================================
 # FILTER RESULTS
@@ -464,11 +462,7 @@ if search:
 
     results = df.copy()
 
-
-    # Company Name
-
     if company_name:
-
         results = results[
             results["Company Name"].str.contains(
                 company_name,
@@ -477,11 +471,7 @@ if search:
             )
         ]
 
-
-    # Company Number
-
     if company_number:
-
         results = results[
             results["Company Number"].str.contains(
                 company_number,
@@ -490,66 +480,42 @@ if search:
             )
         ]
 
-
-    # Company Status
-
     if company_status != "All":
-
         results = results[
             results["Company Status"] == company_status
         ]
 
-
-    # SIC Code / Industry
-
     if sic:
-
         results = results[
-
             results["SIC Code"].str.contains(
                 sic,
                 case=False,
                 na=False
             )
-
             |
-
             results["Industry"].str.contains(
                 sic,
                 case=False,
                 na=False
             )
-
         ]
 
-
-    # Location / Postcode
-
     if location:
-
         results = results[
-
             results["Location"].str.contains(
                 location,
                 case=False,
                 na=False
             )
-
             |
-
             results["Postcode"].str.contains(
                 location,
                 case=False,
                 na=False
             )
-
         ]
 
-
-    # Accountant
-
     if accountant:
-
         results = results[
             results["Accountant"].str.contains(
                 accountant,
@@ -558,11 +524,7 @@ if search:
             )
         ]
 
-
-    # Auditor
-
     if auditor:
-
         results = results[
             results["Auditor"].str.contains(
                 auditor,
@@ -571,47 +533,27 @@ if search:
             )
         ]
 
-
-    # Minimum Employees
-
     if min_employees > 0:
-
         results = results[
             results["Employees"] >= min_employees
         ]
 
-
-    # Maximum Employees
-
     if max_employees > 0:
-
         results = results[
             results["Employees"] <= max_employees
         ]
 
-
-    # Minimum Turnover
-
     if min_turnover > 0:
-
         results = results[
             results["Turnover"] >= min_turnover
         ]
 
-
-    # Maximum Turnover
-
     if max_turnover > 0:
-
         results = results[
             results["Turnover"] <= max_turnover
         ]
 
-
-    # Save results
-
     st.session_state["results"] = results
-
 
 # ==================================================
 # RESULTS
@@ -621,29 +563,17 @@ if "results" in st.session_state:
 
     results = st.session_state["results"]
 
-
     st.markdown(
         "<hr>",
         unsafe_allow_html=True
     )
-
-
-    # --------------------------------------------------
-    # RESULT COUNT
-    # --------------------------------------------------
 
     st.metric(
         "COMPANIES FOUND",
         f"{len(results):,}"
     )
 
-
-    # --------------------------------------------------
-    # FORMAT RESULTS FOR DISPLAY
-    # --------------------------------------------------
-
     display_df = results.copy()
-
 
     display_df["Turnover"] = display_df[
         "Turnover"
@@ -651,26 +581,15 @@ if "results" in st.session_state:
         lambda x: f"£{x:,.0f}"
     )
 
-
-    # --------------------------------------------------
-    # DISPLAY TABLE
-    # --------------------------------------------------
-
     st.dataframe(
         display_df,
         use_container_width=True,
         hide_index=True
     )
 
-
-    # --------------------------------------------------
-    # CSV DOWNLOAD
-    # --------------------------------------------------
-
     csv = results.to_csv(
         index=False
     ).encode("utf-8")
-
 
     st.download_button(
         label="DOWNLOAD SELECTION",
@@ -678,7 +597,6 @@ if "results" in st.session_state:
         file_name="rebel_data_selection.csv",
         mime="text/csv"
     )
-
 
 # ==================================================
 # FOOTER
@@ -688,7 +606,6 @@ st.markdown(
     "<hr>",
     unsafe_allow_html=True
 )
-
 
 st.markdown(
     '<div style="'
