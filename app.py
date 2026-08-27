@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import pymssql
 import math
+import time
 
 
 # ==================================================
@@ -149,36 +150,50 @@ st.markdown(
 
 def get_connection():
 
-    return pymssql.connect(
-        server=st.secrets["database"]["server"],
-        user=st.secrets["database"]["username"],
-        password=st.secrets["database"]["password"],
-        database=st.secrets["database"]["database"],
-        port=1433,
-        login_timeout=30,
-        timeout=30
-    )
+    max_attempts = 6
+
+    for attempt in range(1, max_attempts + 1):
+
+        try:
+
+            return pymssql.connect(
+                server=st.secrets["database"]["server"],
+                user=st.secrets["database"]["username"],
+                password=st.secrets["database"]["password"],
+                database=st.secrets["database"]["database"],
+                port=1433,
+                login_timeout=60,
+                timeout=60
+            )
+
+        except pymssql.OperationalError:
+
+            if attempt == max_attempts:
+                raise
+
+            time.sleep(10)
 
 
 # ==================================================
 # ACCOUNTANT / AUDITOR FILTER VALUES
 # ==================================================
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def get_accountants():
 
     conn = get_connection()
 
     try:
+
         cursor = conn.cursor()
 
-        cursor.execute("""
-            SELECT DISTINCT AccountantName
-            FROM dbo.vw_RebelCompanies
-            WHERE AccountantName IS NOT NULL
-              AND LTRIM(RTRIM(AccountantName)) <> ''
+        cursor.execute(
+            """
+            SELECT AccountantName
+            FROM dbo.Rebel_Accountants
             ORDER BY AccountantName
-        """)
+            """
+        )
 
         values = [
             row[0]
@@ -188,26 +203,28 @@ def get_accountants():
         cursor.close()
 
     finally:
+
         conn.close()
 
     return values
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def get_auditors():
 
     conn = get_connection()
 
     try:
+
         cursor = conn.cursor()
 
-        cursor.execute("""
-            SELECT DISTINCT AuditorName
-            FROM dbo.vw_RebelCompanies
-            WHERE AuditorName IS NOT NULL
-              AND LTRIM(RTRIM(AuditorName)) <> ''
+        cursor.execute(
+            """
+            SELECT AuditorName
+            FROM dbo.Rebel_Auditors
             ORDER BY AuditorName
-        """)
+            """
+        )
 
         values = [
             row[0]
@@ -217,6 +234,7 @@ def get_auditors():
         cursor.close()
 
     finally:
+
         conn.close()
 
     return values
@@ -990,8 +1008,8 @@ try:
 
 except Exception:
 
-    st.error(
-        "Unable to load Accountant and Auditor lists."
+    st.warning(
+        "Accountant and Auditor lists are temporarily unavailable. You can still search using the other filters."
     )
 
     accountant_options = []
