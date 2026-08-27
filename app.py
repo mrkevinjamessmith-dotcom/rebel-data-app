@@ -178,14 +178,21 @@ def get_connection():
 # ACCOUNTANT / AUDITOR FILTER VALUES
 # ==================================================
 
-@st.cache_data(ttl=86400)
-def get_accountants():
+@st.cache_data(
+    ttl=86400,
+    show_spinner=False
+)
+def get_lookup_values():
 
     conn = get_connection()
 
     try:
 
         cursor = conn.cursor()
+
+        # ------------------------------------------
+        # ACCOUNTANTS
+        # ------------------------------------------
 
         cursor.execute(
             """
@@ -195,28 +202,15 @@ def get_accountants():
             """
         )
 
-        values = [
+        accountants = [
             row[0]
             for row in cursor.fetchall()
         ]
 
-        cursor.close()
 
-    finally:
-
-        conn.close()
-
-    return values
-
-
-@st.cache_data(ttl=86400)
-def get_auditors():
-
-    conn = get_connection()
-
-    try:
-
-        cursor = conn.cursor()
+        # ------------------------------------------
+        # AUDITORS
+        # ------------------------------------------
 
         cursor.execute(
             """
@@ -226,7 +220,7 @@ def get_auditors():
             """
         )
 
-        values = [
+        auditors = [
             row[0]
             for row in cursor.fetchall()
         ]
@@ -237,7 +231,7 @@ def get_auditors():
 
         conn.close()
 
-    return values
+    return accountants, auditors
 
 
 # ==================================================
@@ -424,6 +418,7 @@ def count_companies(search_params):
     conn = get_connection()
 
     try:
+
         cursor = conn.cursor()
 
         cursor.execute(
@@ -436,6 +431,7 @@ def count_companies(search_params):
         cursor.close()
 
     finally:
+
         conn.close()
 
     return int(result)
@@ -526,6 +522,7 @@ def search_companies(
         cursor.close()
 
     finally:
+
         conn.close()
 
     return results
@@ -612,6 +609,7 @@ def get_download_data(
         cursor.close()
 
     finally:
+
         conn.close()
 
     return results
@@ -687,7 +685,9 @@ def get_company_detail(
 
             WHERE CompanyNumber = %s
             """,
-            (company_number,)
+            (
+                company_number,
+            )
         )
 
         row = cursor.fetchone()
@@ -710,6 +710,7 @@ def get_company_detail(
         cursor.close()
 
     finally:
+
         conn.close()
 
     return detail
@@ -728,6 +729,7 @@ def display_value(value):
         value,
         pd.Timestamp
     ):
+
         return value.strftime(
             "%d/%m/%Y"
         )
@@ -736,14 +738,20 @@ def display_value(value):
         value,
         "strftime"
     ):
+
         try:
+
             return value.strftime(
                 "%d/%m/%Y"
             )
-        except:
+
+        except Exception:
+
             pass
 
-    text = str(value).strip()
+    text = str(
+        value
+    ).strip()
 
     if text == "":
         return "Not available"
@@ -769,7 +777,10 @@ defaults = {
 for key, value in defaults.items():
 
     if key not in st.session_state:
-        st.session_state[key] = value
+
+        st.session_state[
+            key
+        ] = value
 
 
 # ==================================================
@@ -808,7 +819,9 @@ def show_header(
 
         if show_logout:
 
-            if st.session_state["client"]:
+            if st.session_state[
+                "client"
+            ]:
 
                 name = st.session_state[
                     "name"
@@ -835,7 +848,9 @@ def show_header(
 
                     st.session_state[
                         key
-                    ] = defaults[key]
+                    ] = defaults[
+                        key
+                    ]
 
                 st.rerun()
 
@@ -929,7 +944,9 @@ if not st.session_state[
 
                     if (
                         password
-                        == user["password"]
+                        == user[
+                            "password"
+                        ]
                     ):
 
                         st.session_state[
@@ -942,11 +959,15 @@ if not st.session_state[
 
                         st.session_state[
                             "name"
-                        ] = user["name"]
+                        ] = user[
+                            "name"
+                        ]
 
                         st.session_state[
                             "client"
-                        ] = user["client"]
+                        ] = user[
+                            "client"
+                        ]
 
                         st.rerun()
 
@@ -998,18 +1019,15 @@ st.markdown(
 
 try:
 
-    accountant_options = (
-        get_accountants()
+    accountant_options, auditor_options = (
+        get_lookup_values()
     )
 
-    auditor_options = (
-        get_auditors()
-    )
-
-except Exception:
+except Exception as e:
 
     st.warning(
-        "Accountant and Auditor lists are temporarily unavailable. You can still search using the other filters."
+        "Accountant and Auditor lists are temporarily unavailable. "
+        "You can still search using the other filters."
     )
 
     accountant_options = []
@@ -1228,7 +1246,9 @@ if search:
                 "Unable to search the Rebel Data database."
             )
 
-            st.exception(e)
+            st.exception(
+                e
+            )
 
 
 # ==================================================
@@ -1236,7 +1256,9 @@ if search:
 # ==================================================
 
 if (
-    st.session_state["results"]
+    st.session_state[
+        "results"
+    ]
     is not None
 ):
 
@@ -1281,8 +1303,12 @@ if (
     )
 
     start_record = (
-        ((page_number - 1)
-         * PAGE_SIZE)
+        (
+            (
+                page_number - 1
+            )
+            * PAGE_SIZE
+        )
         + 1
         if result_count > 0
         else 0
@@ -1340,7 +1366,9 @@ if (
     # RESULTS TABLE
     # ----------------------------------------------
 
-    if len(results) > 0:
+    if len(
+        results
+    ) > 0:
 
         st.dataframe(
             results,
@@ -1408,7 +1436,9 @@ if (
             )
 
 
-        # Previous page
+        # ------------------------------------------
+        # PREVIOUS PAGE
+        # ------------------------------------------
 
         if previous_clicked:
 
@@ -1440,7 +1470,9 @@ if (
             st.rerun()
 
 
-        # Next page
+        # ------------------------------------------
+        # NEXT PAGE
+        # ------------------------------------------
 
         if next_clicked:
 
@@ -1557,11 +1589,14 @@ if (
         )
 
         company_choices = {
+
             (
                 f"{row['Company Name']} "
                 f"({row['Company Number']})"
             ):
-            row["Company Number"]
+            row[
+                "Company Number"
+            ]
 
             for _, row
             in results.iterrows()
@@ -1628,7 +1663,9 @@ if (
                     )
 
                     col1, col2, col3, col4 = (
-                        st.columns(4)
+                        st.columns(
+                            4
+                        )
                     )
 
                     col1.metric(
@@ -1677,7 +1714,9 @@ if (
                     )
 
                     col1, col2, col3 = (
-                        st.columns(3)
+                        st.columns(
+                            3
+                        )
                     )
 
                     col1.write(
@@ -1726,21 +1765,43 @@ if (
                     )
 
                     address_parts = [
-                        detail["POBox"],
-                        detail["AddressLine1"],
-                        detail["AddressLine2"],
-                        detail["PostTown"],
-                        detail["County"],
-                        detail["Country"],
-                        detail["PostCode"]
+                        detail[
+                            "POBox"
+                        ],
+                        detail[
+                            "AddressLine1"
+                        ],
+                        detail[
+                            "AddressLine2"
+                        ],
+                        detail[
+                            "PostTown"
+                        ],
+                        detail[
+                            "County"
+                        ],
+                        detail[
+                            "Country"
+                        ],
+                        detail[
+                            "PostCode"
+                        ]
                     ]
 
                     address_parts = [
-                        str(x).strip()
-                        for x
+                        str(
+                            value
+                        ).strip()
+
+                        for value
                         in address_parts
-                        if x is not None
-                        and str(x).strip()
+
+                        if value
+                        is not None
+
+                        and str(
+                            value
+                        ).strip()
                         != ""
                     ]
 
@@ -1763,24 +1824,41 @@ if (
                     )
 
                     sic_values = [
-                        detail["SIC1"],
-                        detail["SIC2"],
-                        detail["SIC3"],
-                        detail["SIC4"]
+                        detail[
+                            "SIC1"
+                        ],
+                        detail[
+                            "SIC2"
+                        ],
+                        detail[
+                            "SIC3"
+                        ],
+                        detail[
+                            "SIC4"
+                        ]
                     ]
 
                     sic_values = [
-                        str(x).strip()
-                        for x
+                        str(
+                            value
+                        ).strip()
+
+                        for value
                         in sic_values
-                        if x is not None
-                        and str(x).strip()
+
+                        if value
+                        is not None
+
+                        and str(
+                            value
+                        ).strip()
                         != ""
                     ]
 
                     if sic_values:
 
                         for sic_value in sic_values:
+
                             st.write(
                                 f"• {sic_value}"
                             )
@@ -1801,7 +1879,9 @@ if (
                     )
 
                     col1, col2 = (
-                        st.columns(2)
+                        st.columns(
+                            2
+                        )
                     )
 
                     with col1:
@@ -1842,7 +1922,9 @@ if (
                     )
 
                     col1, col2, col3 = (
-                        st.columns(3)
+                        st.columns(
+                            3
+                        )
                     )
 
                     with col1:
@@ -1897,7 +1979,9 @@ if (
                     )
 
                     col1, col2, col3, col4 = (
-                        st.columns(4)
+                        st.columns(
+                            4
+                        )
                     )
 
                     col1.metric(
@@ -1942,7 +2026,9 @@ if (
                     "Unable to load company details."
                 )
 
-                st.exception(e)
+                st.exception(
+                    e
+                )
 
     else:
 
