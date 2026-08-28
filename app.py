@@ -966,9 +966,10 @@ def show_accounts_comparison(c):
 
     st.markdown(
         f"""
-        <div style="color:#cfcfcf;font-size:15px;margin-bottom:20px;">
-            Comparing <b style="color:#8bd02f;">{latest_period}</b>
-            with <b style="color:white;">{previous_period}</b>
+        <div style="color:#cfcfcf;font-size:15px;margin-bottom:22px;">
+            Latest accounts <b style="color:#8bd02f;">{latest_period}</b>
+            &nbsp;&nbsp;vs&nbsp;&nbsp;
+            previous accounts <b style="color:white;">{previous_period}</b>
         </div>
         """,
         unsafe_allow_html=True
@@ -992,16 +993,15 @@ def show_accounts_comparison(c):
 
     if available_kpis:
         kpi_cols = st.columns(len(available_kpis))
-
         for col, (label, latest_field, previous_field, value_type) in zip(kpi_cols, available_kpis):
             latest = c.get(latest_field)
             previous = c.get(previous_field)
             pct = calculate_change_pct(latest, previous)
 
             if pct is not None:
-                delta = f"{pct:+.1f}% vs previous"
+                delta = f"{pct:+.1f}%"
             elif latest is not None and previous is None:
-                delta = "Previous not disclosed"
+                delta = "No previous value"
             else:
                 delta = None
 
@@ -1012,63 +1012,170 @@ def show_accounts_comparison(c):
             )
 
     # --------------------------------------------------
-    # PROFIT & LOSS CHART
+    # YEAR-ON-YEAR MOVEMENT - % CHANGE
+    # This is deliberately percentage based so turnover does not dwarf profit.
     # --------------------------------------------------
 
-    pnl_metrics = [
+    movement_metrics = [
         ("Turnover", "LatestTurnover", "PreviousTurnover"),
         ("Gross Profit", "LatestGrossProfit", "PreviousGrossProfit"),
         ("Operating Profit", "LatestOperatingProfit", "PreviousOperatingProfit"),
         ("Profit Before Tax", "LatestProfitBeforeTax", "PreviousProfitBeforeTax"),
-        ("Profit After Tax", "LatestProfitAfterTax", "PreviousProfitAfterTax")
-    ]
-
-    pnl_rows = []
-    for label, latest_field, previous_field in pnl_metrics:
-        latest = to_number(c.get(latest_field))
-        previous = to_number(c.get(previous_field))
-        if latest is not None or previous is not None:
-            pnl_rows.append({
-                "Metric": label,
-                "Previous": previous,
-                "Latest": latest
-            })
-
-    if pnl_rows:
-        st.subheader("Profit & Loss")
-        pnl_df = pd.DataFrame(pnl_rows).set_index("Metric")
-        st.bar_chart(pnl_df, use_container_width=True)
-
-    # --------------------------------------------------
-    # BALANCE SHEET CHART
-    # --------------------------------------------------
-
-    balance_metrics = [
+        ("Profit After Tax", "LatestProfitAfterTax", "PreviousProfitAfterTax"),
         ("Cash", "LatestCash", "PreviousCash"),
-        ("Debtors", "LatestDebtors", "PreviousDebtors"),
-        ("Current Assets", "LatestCurrentAssets", "PreviousCurrentAssets"),
         ("Net Assets", "LatestNetAssets", "PreviousNetAssets"),
-        ("Bank Borrowings", "LatestBankBorrowings", "PreviousBankBorrowings")
+        ("Employees", "LatestEmployees", "PreviousEmployees")
     ]
 
-    balance_rows = []
-    for label, latest_field, previous_field in balance_metrics:
-        latest = to_number(c.get(latest_field))
-        previous = to_number(c.get(previous_field))
-        if latest is not None or previous is not None:
-            balance_rows.append({
-                "Metric": label,
-                "Previous": previous,
-                "Latest": latest
-            })
+    movement_rows = []
+    for label, latest_field, previous_field in movement_metrics:
+        pct = calculate_change_pct(c.get(latest_field), c.get(previous_field))
+        if pct is not None:
+            movement_rows.append({"Metric": label, "Change": round(pct, 1)})
 
-    if balance_rows:
-        st.subheader("Balance Sheet")
-        balance_df = pd.DataFrame(balance_rows).set_index("Metric")
-        st.bar_chart(balance_df, use_container_width=True)
+    if movement_rows:
+        st.markdown("### Year-on-year movement")
+        st.caption("Percentage change from the previous accounts. This makes differently-sized metrics easy to compare.")
+
+        movement_df = pd.DataFrame(movement_rows)
+        movement_spec = {
+            "background": "#3d3d3f",
+            "height": max(220, len(movement_rows) * 42),
+            "mark": {"type": "bar", "cornerRadiusEnd": 4},
+            "encoding": {
+                "y": {
+                    "field": "Metric",
+                    "type": "nominal",
+                    "sort": None,
+                    "axis": {
+                        "title": None,
+                        "labelColor": "#ffffff",
+                        "labelFontSize": 13,
+                        "ticks": False,
+                        "domain": False
+                    }
+                },
+                "x": {
+                    "field": "Change",
+                    "type": "quantitative",
+                    "axis": {
+                        "title": "Change vs previous (%)",
+                        "titleColor": "#cfcfcf",
+                        "labelColor": "#cfcfcf",
+                        "gridColor": "#555557",
+                        "domain": False
+                    }
+                },
+                "color": {
+                    "condition": {"test": "datum.Change >= 0", "value": "#8bd02f"},
+                    "value": "#ff6b6b"
+                },
+                "tooltip": [
+                    {"field": "Metric", "type": "nominal"},
+                    {"field": "Change", "type": "quantitative", "format": "+.1f", "title": "Change (%)"}
+                ]
+            },
+            "config": {
+                "view": {"stroke": None},
+                "axis": {"labelFont": "sans-serif", "titleFont": "sans-serif"}
+            }
+        }
+        st.vega_lite_chart(movement_df, movement_spec, use_container_width=True)
 
     # --------------------------------------------------
-    # LATEST CURRENT ASSET MIX PIE / DONUT CHART
+    # CLEAN MINI COMPARISON CHARTS
+    # Each metric gets its own scale, avoiding giant bars and unreadable charts.
+    # --------------------------------------------------
+
+    def render_two_period_chart(title, latest_field, previous_field, value_type="currency"):
+        latest = to_number(c.get(latest_field))
+        previous = to_number(c.get(previous_field))
+        if latest is None and previous is None:
+            return False
+
+        chart_rows = []
+        if previous is not None:
+            chart_rows.append({"Period": "Previous", "Value": previous})
+        if latest is not None:
+            chart_rows.append({"Period": "Latest", "Value": latest})
+
+        chart_df = pd.DataFrame(chart_rows)
+        prefix = "" if value_type == "integer" else "£"
+
+        spec = {
+            "background": "#3d3d3f",
+            "height": 170,
+            "mark": {"type": "bar", "cornerRadiusTopLeft": 5, "cornerRadiusTopRight": 5},
+            "encoding": {
+                "x": {
+                    "field": "Period",
+                    "type": "nominal",
+                    "sort": ["Previous", "Latest"],
+                    "axis": {
+                        "title": None,
+                        "labelColor": "#ffffff",
+                        "labelFontSize": 12,
+                        "ticks": False,
+                        "domain": False
+                    }
+                },
+                "y": {
+                    "field": "Value",
+                    "type": "quantitative",
+                    "axis": {
+                        "title": None,
+                        "labelColor": "#cfcfcf",
+                        "gridColor": "#555557",
+                        "domain": False,
+                        "format": "~s"
+                    }
+                },
+                "color": {
+                    "field": "Period",
+                    "type": "nominal",
+                    "scale": {
+                        "domain": ["Previous", "Latest"],
+                        "range": ["#8a8a8d", "#8bd02f"]
+                    },
+                    "legend": None
+                },
+                "tooltip": [
+                    {"field": "Period", "type": "nominal"},
+                    {"field": "Value", "type": "quantitative", "format": ",.0f", "title": title}
+                ]
+            },
+            "config": {"view": {"stroke": None}}
+        }
+
+        st.markdown(
+            f'<div style="font-weight:700;color:white;margin-bottom:-8px;">{title}</div>',
+            unsafe_allow_html=True
+        )
+        st.vega_lite_chart(chart_df, spec, use_container_width=True)
+
+        latest_text = format_financial_value(c.get(latest_field), value_type)
+        previous_text = format_financial_value(c.get(previous_field), value_type)
+        st.caption(f"Latest {latest_text}  |  Previous {previous_text}")
+        return True
+
+    mini_charts = [
+        ("Turnover", "LatestTurnover", "PreviousTurnover", "currency"),
+        ("Profit Before Tax", "LatestProfitBeforeTax", "PreviousProfitBeforeTax", "currency"),
+        ("Cash", "LatestCash", "PreviousCash", "currency"),
+        ("Net Assets", "LatestNetAssets", "PreviousNetAssets", "currency")
+    ]
+
+    available_mini = [x for x in mini_charts if c.get(x[1]) is not None or c.get(x[2]) is not None]
+    if available_mini:
+        st.markdown("### Key financials")
+        for i in range(0, len(available_mini), 2):
+            cols = st.columns(2)
+            for col, item in zip(cols, available_mini[i:i+2]):
+                with col:
+                    render_two_period_chart(*item)
+
+    # --------------------------------------------------
+    # CURRENT ASSET MIX - COMPACT DONUT
     # --------------------------------------------------
 
     current_assets = to_number(c.get("LatestCurrentAssets"))
@@ -1086,43 +1193,62 @@ def show_accounts_comparison(c):
         if debtors_value > 0:
             asset_mix.append({"Category": "Debtors", "Value": debtors_value})
         if other_value > 0:
-            asset_mix.append({"Category": "Other Current Assets", "Value": other_value})
+            asset_mix.append({"Category": "Other current assets", "Value": other_value})
 
         if len(asset_mix) >= 2:
-            st.subheader("Latest Current Asset Mix")
-            st.vega_lite_chart(
-                pd.DataFrame(asset_mix),
-                {
-                    "mark": {"type": "arc", "innerRadius": 55},
-                    "encoding": {
-                        "theta": {
-                            "field": "Value",
-                            "type": "quantitative"
+            st.markdown("### Latest current asset mix")
+            asset_df = pd.DataFrame(asset_mix)
+            donut_spec = {
+                "background": "#3d3d3f",
+                "height": 280,
+                "mark": {"type": "arc", "innerRadius": 72, "outerRadius": 120, "stroke": "#3d3d3f", "strokeWidth": 2},
+                "encoding": {
+                    "theta": {"field": "Value", "type": "quantitative"},
+                    "color": {
+                        "field": "Category",
+                        "type": "nominal",
+                        "scale": {
+                            "domain": ["Cash", "Debtors", "Other current assets"],
+                            "range": ["#8bd02f", "#ffffff", "#8a8a8d"]
                         },
-                        "color": {
-                            "field": "Category",
-                            "type": "nominal",
-                            "legend": {"title": None}
-                        },
-                        "tooltip": [
-                            {"field": "Category", "type": "nominal"},
-                            {
-                                "field": "Value",
-                                "type": "quantitative",
-                                "format": ",.0f",
-                                "title": "Value (£)"
-                            }
-                        ]
-                    }
+                        "legend": {
+                            "title": None,
+                            "labelColor": "#ffffff",
+                            "labelFontSize": 12,
+                            "orient": "right"
+                        }
+                    },
+                    "tooltip": [
+                        {"field": "Category", "type": "nominal"},
+                        {"field": "Value", "type": "quantitative", "format": ",.0f", "title": "Value (£)"}
+                    ]
                 },
-                use_container_width=True
-            )
+                "config": {"view": {"stroke": None}}
+            }
+            left, right = st.columns([1.2, 1])
+            with left:
+                st.vega_lite_chart(asset_df, donut_spec, use_container_width=True)
+            with right:
+                st.markdown(
+                    f"""
+                    <div style="background:#333335;padding:18px;border-radius:8px;border-left:4px solid #8bd02f;margin-top:20px;">
+                        <div style="font-size:13px;color:#cfcfcf;margin-bottom:6px;">CURRENT ASSETS</div>
+                        <div style="font-size:28px;font-weight:800;color:#8bd02f;">{format_financial_value(current_assets)}</div>
+                        <div style="font-size:13px;color:#cfcfcf;margin-top:14px;line-height:1.8;">
+                            Cash: <b style="color:white;">{format_financial_value(cash)}</b><br>
+                            Debtors: <b style="color:white;">{format_financial_value(debtors)}</b><br>
+                            Other: <b style="color:white;">{format_financial_value(other_value)}</b>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
 
     # --------------------------------------------------
     # DETAILED COMPARISON TABLE
     # --------------------------------------------------
 
-    st.subheader("Detailed Financial Comparison")
+    st.markdown("### Detailed financial comparison")
 
     metrics = [
         ("Employees", "LatestEmployees", "PreviousEmployees", "integer"),
@@ -1157,11 +1283,7 @@ def show_accounts_comparison(c):
         })
 
     if rows:
-        st.dataframe(
-            pd.DataFrame(rows),
-            use_container_width=True,
-            hide_index=True
-        )
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     else:
         st.info("No comparable financial metrics are available.")
 
@@ -1169,7 +1291,7 @@ def show_accounts_comparison(c):
     # FINANCIAL COMMENTARY
     # --------------------------------------------------
 
-    st.subheader("Financial Trend")
+    st.markdown("### Financial trend")
     st.markdown(
         f"""
         <div style="
@@ -1188,31 +1310,25 @@ def show_accounts_comparison(c):
     )
 
     # --------------------------------------------------
-    # PROFESSIONAL ADVISER CHANGES
+    # PROFESSIONAL ADVISERS
     # --------------------------------------------------
 
-    st.subheader("Professional Adviser Changes")
-
+    st.markdown("### Professional adviser changes")
     adviser_rows = [
         {
             "Adviser": "Accountant",
             "Latest": display_value(c.get("LatestAccountantName")),
             "Previous": display_value(c.get("PreviousAccountantName")),
-            "Changed": "YES" if c.get("AccountantChanged") == 1 else "NO"
+            "Changed": "Yes" if c.get("AccountantChanged") == 1 else "No"
         },
         {
             "Adviser": "Auditor",
             "Latest": display_value(c.get("LatestAuditorName")),
             "Previous": display_value(c.get("PreviousAuditorName")),
-            "Changed": "YES" if c.get("AuditorChanged") == 1 else "NO"
+            "Changed": "Yes" if c.get("AuditorChanged") == 1 else "No"
         }
     ]
-
-    st.dataframe(
-        pd.DataFrame(adviser_rows),
-        use_container_width=True,
-        hide_index=True
-    )
+    st.dataframe(pd.DataFrame(adviser_rows), use_container_width=True, hide_index=True)
 
 
 # ==================================================
