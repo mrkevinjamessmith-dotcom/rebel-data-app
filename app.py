@@ -1143,6 +1143,41 @@ def get_rd_referral_summary():
     return dict(zip(columns, row))
 
 
+@st.cache_data(ttl=86400)
+def get_rd_referral_accountants():
+
+    conn = get_connection()
+
+    try:
+
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT AccountantName
+            FROM dbo.RD_AccountantOpportunities
+            WHERE AccountantName IS NOT NULL
+              AND LTRIM(RTRIM(AccountantName)) <> ''
+            ORDER BY AccountantName
+            """
+        )
+
+        values = [
+            str(row[0]).strip()
+            for row in cursor.fetchall()
+            if row[0] is not None
+            and str(row[0]).strip() != ""
+        ]
+
+        cursor.close()
+
+    finally:
+
+        conn.close()
+
+    return values
+
+
 def build_rd_referral_filters(search_params):
 
     sql = ""
@@ -1154,14 +1189,14 @@ def build_rd_referral_filters(search_params):
     min_rd_clients = search_params["min_rd_clients"]
     min_score = search_params["min_score"]
 
-    if accountant_name:
+    if accountant_name and accountant_name != "All":
 
         sql += """
-            AND AccountantName LIKE %s
+            AND AccountantName = %s
         """
 
         params.append(
-            f"%{accountant_name}%"
+            accountant_name
         )
 
     if opportunity_bands:
@@ -2438,6 +2473,19 @@ def show_rd_referral_page():
         unsafe_allow_html=True
     )
 
+    try:
+
+        rd_accountant_options = get_rd_referral_accountants()
+
+    except Exception as e:
+
+        st.warning(
+            "Unable to load the R&D accountant list. "
+            "The other referral filters are still available."
+        )
+
+        rd_accountant_options = []
+
     with st.form(
         "rd_referral_search_form"
     ):
@@ -2446,9 +2494,11 @@ def show_rd_referral_page():
 
         with col1:
 
-            accountant_name = st.text_input(
+            accountant_name = st.selectbox(
                 "Accountant",
-                placeholder="e.g. Cooper Parry"
+                ["All"] + rd_accountant_options,
+                index=0,
+                key="rd_accountant_filter"
             )
 
         with col2:
@@ -3210,23 +3260,64 @@ show_header(
 )
 
 
-page = st.radio(
-    "Navigation",
-    [
-        "Company Search",
-        "R&D Referral Partners"
-    ],
-    horizontal=True,
-    label_visibility="collapsed"
+# ==================================================
+# TOP NAVIGATION MENU
+# ==================================================
+
+if "active_page" not in st.session_state:
+    st.session_state["active_page"] = "Company Search"
+
+st.markdown(
+    """
+    <style>
+    div[data-testid="stHorizontalBlock"] > div:has(button[key="nav_company_search"]),
+    div[data-testid="stHorizontalBlock"] > div:has(button[key="nav_rd_referrals"]) {
+        gap: 0.5rem;
+    }
+
+    button[kind="secondary"] {
+        border-radius: 6px !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
 )
 
+nav1, nav2, nav_spacer = st.columns([1.2, 1.5, 5])
 
-if page == "Company Search":
+with nav1:
+    company_active = (
+        st.session_state["active_page"] == "Company Search"
+    )
 
+    if st.button(
+        "COMPANY SEARCH",
+        key="nav_company_search",
+        use_container_width=True,
+        type="primary" if company_active else "secondary"
+    ):
+        st.session_state["active_page"] = "Company Search"
+        st.rerun()
+
+with nav2:
+    rd_active = (
+        st.session_state["active_page"] == "R&D Referral Partners"
+    )
+
+    if st.button(
+        "R&D REFERRAL PARTNERS",
+        key="nav_rd_referrals",
+        use_container_width=True,
+        type="primary" if rd_active else "secondary"
+    ):
+        st.session_state["active_page"] = "R&D Referral Partners"
+        st.rerun()
+
+st.markdown("<hr>", unsafe_allow_html=True)
+
+if st.session_state["active_page"] == "Company Search":
     show_company_search_page()
-
 else:
-
     show_rd_referral_page()
 
 
