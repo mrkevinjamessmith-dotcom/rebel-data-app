@@ -849,6 +849,189 @@ def get_company_detail(
     return detail
 
 
+
+# ==================================================
+# ACCOUNTS COMPARISON
+# ==================================================
+
+def get_accounts_comparison(company_number):
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT TOP 1 *
+            FROM dbo.RD_AccountsComparison
+            WHERE LTRIM(RTRIM(CRO)) = LTRIM(RTRIM(%s))
+            """,
+            (str(company_number),)
+        )
+        row = cursor.fetchone()
+        if row is None:
+            cursor.close()
+            return None
+        columns = [column[0] for column in cursor.description]
+        result = dict(zip(columns, row))
+        cursor.close()
+        return result
+    finally:
+        conn.close()
+
+
+def to_number(value):
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def format_financial_value(value, value_type="currency"):
+    number = to_number(value)
+    if number is None:
+        return "Not available"
+    if value_type == "integer":
+        return f"{number:,.0f}"
+    return f"£{number:,.0f}"
+
+
+def calculate_change_pct(latest, previous):
+    latest_number = to_number(latest)
+    previous_number = to_number(previous)
+    if latest_number is None or previous_number is None or previous_number == 0:
+        return None
+    return ((latest_number - previous_number) / abs(previous_number)) * 100
+
+
+def format_change(latest, previous):
+    latest_number = to_number(latest)
+    previous_number = to_number(previous)
+    if latest_number is None or previous_number is None:
+        return "Not available"
+    difference = latest_number - previous_number
+    pct = calculate_change_pct(latest_number, previous_number)
+    if pct is None:
+        return f"{difference:+,.0f}"
+    return f"{difference:+,.0f} ({pct:+.1f}%)"
+
+
+def build_financial_commentary(c):
+    comments = []
+    checks = [
+        ("Turnover", "LatestTurnover", "PreviousTurnover"),
+        ("Employee numbers", "LatestEmployees", "PreviousEmployees"),
+        ("Profit before tax", "LatestProfitBeforeTax", "PreviousProfitBeforeTax"),
+        ("Cash", "LatestCash", "PreviousCash"),
+        ("Net assets", "LatestNetAssets", "PreviousNetAssets")
+    ]
+
+    for label, latest_field, previous_field in checks:
+        pct = calculate_change_pct(c.get(latest_field), c.get(previous_field))
+        if pct is None:
+            continue
+        if pct > 0:
+            comments.append(f"{label} increased by {pct:.1f}%.")
+        elif pct < 0:
+            comments.append(f"{label} decreased by {abs(pct):.1f}%.")
+        else:
+            comments.append(f"{label} was unchanged.")
+
+    if c.get("AccountantChanged") == 1:
+        comments.append("The accountant changed between the two latest accounts.")
+    if c.get("AuditorChanged") == 1:
+        comments.append("The auditor changed between the two latest accounts.")
+
+    return " ".join(comments) if comments else (
+        "There is not enough comparable information to generate a meaningful trend summary."
+    )
+
+
+def show_accounts_comparison(c):
+    st.markdown("<hr>", unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-title">Financial Comparison</div>',
+        unsafe_allow_html=True
+    )
+
+    if c.get("PreviousAccountsPeriodEnd") is None:
+        st.info(
+            "Only one set of accounts is currently available for this company, "
+            "so a year-on-year comparison cannot yet be shown."
+        )
+        return
+
+    latest_period = display_value(c.get("LatestAccountsPeriodEnd"))
+    previous_period = display_value(c.get("PreviousAccountsPeriodEnd"))
+
+    st.markdown(
+        f"""
+        <div style="color:#cfcfcf;font-size:15px;margin-bottom:18px;">
+            Comparing <b style="color:#8bd02f;">{latest_period}</b>
+            with <b style="color:white;">{previous_period}</b>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    metrics = [
+        ("Employees", "LatestEmployees", "PreviousEmployees", "integer"),
+        ("Turnover", "LatestTurnover", "PreviousTurnover", "currency"),
+        ("Gross Profit", "LatestGrossProfit", "PreviousGrossProfit", "currency"),
+        ("Operating Profit", "LatestOperatingProfit", "PreviousOperatingProfit", "currency"),
+        ("Profit Before Tax", "LatestProfitBeforeTax", "PreviousProfitBeforeTax", "currency"),
+        ("Profit After Tax", "LatestProfitAfterTax", "PreviousProfitAfterTax", "currency"),
+        ("Fixed Assets", "LatestFixedAssets", "PreviousFixedAssets", "currency"),
+        ("Current Assets", "LatestCurrentAssets", "PreviousCurrentAssets", "currency"),
+        ("Cash", "LatestCash", "PreviousCash", "currency"),
+        ("Debtors", "LatestDebtors", "PreviousDebtors", "currency"),
+        ("Creditors Due Within 1 Year", "LatestCreditorsDueWithinOneYear", "PreviousCreditorsDueWithinOneYear", "currency"),
+        ("Creditors Due After 1 Year", "LatestCreditorsDueAfterOneYear", "PreviousCreditorsDueAfterOneYear", "currency"),
+        ("Net Current Assets", "LatestNetCurrentAssets", "PreviousNetCurrentAssets", "currency"),
+        ("Total Assets Less Current Liabilities", "LatestTotalAssetsLessCurrentLiabilities", "PreviousTotalAssetsLessCurrentLiabilities", "currency"),
+        ("Net Assets", "LatestNetAssets", "PreviousNetAssets", "currency"),
+        ("Bank Borrowings", "LatestBankBorrowings", "PreviousBankBorrowings", "currency")
+    ]
+
+    rows = []
+    for label, latest_field, previous_field, value_type in metrics:
+        latest = c.get(latest_field)
+        previous = c.get(previous_field)
+        if latest is None and previous is None:
+            continue
+        rows.append({
+            "Metric": label,
+            "Latest": format_financial_value(latest, value_type),
+            "Previous": format_financial_value(previous, value_type),
+            "Change": format_change(latest, previous)
+        })
+
+    if rows:
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("No comparable financial metrics are available.")
+
+    st.subheader("Financial Trend")
+    st.write(build_financial_commentary(c))
+
+    st.subheader("Professional Adviser Changes")
+    adviser_rows = [
+        {
+            "Adviser": "Accountant",
+            "Latest": display_value(c.get("LatestAccountantName")),
+            "Previous": display_value(c.get("PreviousAccountantName")),
+            "Changed": "Yes" if c.get("AccountantChanged") == 1 else "No"
+        },
+        {
+            "Adviser": "Auditor",
+            "Latest": display_value(c.get("LatestAuditorName")),
+            "Previous": display_value(c.get("PreviousAuditorName")),
+            "Changed": "Yes" if c.get("AuditorChanged") == 1 else "No"
+        }
+    ]
+    st.dataframe(pd.DataFrame(adviser_rows), use_container_width=True, hide_index=True)
+
+
 # ==================================================
 # DISPLAY VALUE
 # ==================================================
@@ -2394,6 +2577,37 @@ def show_company_search_page():
                                 detail["MortgagesSatisfied"]
                             )
                         )
+
+
+                        try:
+                            with st.spinner("Loading financial comparison..."):
+                                accounts_comparison = get_accounts_comparison(
+                                    selected_number
+                                )
+
+                            if accounts_comparison:
+                                show_accounts_comparison(accounts_comparison)
+                            else:
+                                st.markdown("<hr>", unsafe_allow_html=True)
+                                st.markdown(
+                                    '<div class="section-title">Financial Comparison</div>',
+                                    unsafe_allow_html=True
+                                )
+                                st.info(
+                                    "No accounts comparison is currently available for this company."
+                                )
+
+                        except Exception as comparison_error:
+                            st.markdown("<hr>", unsafe_allow_html=True)
+                            st.markdown(
+                                '<div class="section-title">Financial Comparison</div>',
+                                unsafe_allow_html=True
+                            )
+                            st.warning(
+                                "The company details loaded, but the financial comparison "
+                                "could not be retrieved."
+                            )
+                            st.exception(comparison_error)
 
                 except Exception as e:
 
