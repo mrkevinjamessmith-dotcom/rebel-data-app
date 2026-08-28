@@ -966,13 +966,163 @@ def show_accounts_comparison(c):
 
     st.markdown(
         f"""
-        <div style="color:#cfcfcf;font-size:15px;margin-bottom:18px;">
+        <div style="color:#cfcfcf;font-size:15px;margin-bottom:20px;">
             Comparing <b style="color:#8bd02f;">{latest_period}</b>
             with <b style="color:white;">{previous_period}</b>
         </div>
         """,
         unsafe_allow_html=True
     )
+
+    # --------------------------------------------------
+    # HEADLINE KPI CARDS
+    # --------------------------------------------------
+
+    kpis = [
+        ("Turnover", "LatestTurnover", "PreviousTurnover", "currency"),
+        ("Profit Before Tax", "LatestProfitBeforeTax", "PreviousProfitBeforeTax", "currency"),
+        ("Cash", "LatestCash", "PreviousCash", "currency"),
+        ("Employees", "LatestEmployees", "PreviousEmployees", "integer")
+    ]
+
+    available_kpis = [
+        item for item in kpis
+        if c.get(item[1]) is not None or c.get(item[2]) is not None
+    ]
+
+    if available_kpis:
+        kpi_cols = st.columns(len(available_kpis))
+
+        for col, (label, latest_field, previous_field, value_type) in zip(kpi_cols, available_kpis):
+            latest = c.get(latest_field)
+            previous = c.get(previous_field)
+            pct = calculate_change_pct(latest, previous)
+
+            if pct is not None:
+                delta = f"{pct:+.1f}% vs previous"
+            elif latest is not None and previous is None:
+                delta = "Previous not disclosed"
+            else:
+                delta = None
+
+            col.metric(
+                label,
+                format_financial_value(latest, value_type),
+                delta=delta
+            )
+
+    # --------------------------------------------------
+    # PROFIT & LOSS CHART
+    # --------------------------------------------------
+
+    pnl_metrics = [
+        ("Turnover", "LatestTurnover", "PreviousTurnover"),
+        ("Gross Profit", "LatestGrossProfit", "PreviousGrossProfit"),
+        ("Operating Profit", "LatestOperatingProfit", "PreviousOperatingProfit"),
+        ("Profit Before Tax", "LatestProfitBeforeTax", "PreviousProfitBeforeTax"),
+        ("Profit After Tax", "LatestProfitAfterTax", "PreviousProfitAfterTax")
+    ]
+
+    pnl_rows = []
+    for label, latest_field, previous_field in pnl_metrics:
+        latest = to_number(c.get(latest_field))
+        previous = to_number(c.get(previous_field))
+        if latest is not None or previous is not None:
+            pnl_rows.append({
+                "Metric": label,
+                "Previous": previous,
+                "Latest": latest
+            })
+
+    if pnl_rows:
+        st.subheader("Profit & Loss")
+        pnl_df = pd.DataFrame(pnl_rows).set_index("Metric")
+        st.bar_chart(pnl_df, use_container_width=True)
+
+    # --------------------------------------------------
+    # BALANCE SHEET CHART
+    # --------------------------------------------------
+
+    balance_metrics = [
+        ("Cash", "LatestCash", "PreviousCash"),
+        ("Debtors", "LatestDebtors", "PreviousDebtors"),
+        ("Current Assets", "LatestCurrentAssets", "PreviousCurrentAssets"),
+        ("Net Assets", "LatestNetAssets", "PreviousNetAssets"),
+        ("Bank Borrowings", "LatestBankBorrowings", "PreviousBankBorrowings")
+    ]
+
+    balance_rows = []
+    for label, latest_field, previous_field in balance_metrics:
+        latest = to_number(c.get(latest_field))
+        previous = to_number(c.get(previous_field))
+        if latest is not None or previous is not None:
+            balance_rows.append({
+                "Metric": label,
+                "Previous": previous,
+                "Latest": latest
+            })
+
+    if balance_rows:
+        st.subheader("Balance Sheet")
+        balance_df = pd.DataFrame(balance_rows).set_index("Metric")
+        st.bar_chart(balance_df, use_container_width=True)
+
+    # --------------------------------------------------
+    # LATEST CURRENT ASSET MIX PIE / DONUT CHART
+    # --------------------------------------------------
+
+    current_assets = to_number(c.get("LatestCurrentAssets"))
+    cash = to_number(c.get("LatestCash"))
+    debtors = to_number(c.get("LatestDebtors"))
+
+    if current_assets is not None and current_assets > 0:
+        cash_value = max(cash or 0, 0)
+        debtors_value = max(debtors or 0, 0)
+        other_value = max(current_assets - cash_value - debtors_value, 0)
+
+        asset_mix = []
+        if cash_value > 0:
+            asset_mix.append({"Category": "Cash", "Value": cash_value})
+        if debtors_value > 0:
+            asset_mix.append({"Category": "Debtors", "Value": debtors_value})
+        if other_value > 0:
+            asset_mix.append({"Category": "Other Current Assets", "Value": other_value})
+
+        if len(asset_mix) >= 2:
+            st.subheader("Latest Current Asset Mix")
+            st.vega_lite_chart(
+                pd.DataFrame(asset_mix),
+                {
+                    "mark": {"type": "arc", "innerRadius": 55},
+                    "encoding": {
+                        "theta": {
+                            "field": "Value",
+                            "type": "quantitative"
+                        },
+                        "color": {
+                            "field": "Category",
+                            "type": "nominal",
+                            "legend": {"title": None}
+                        },
+                        "tooltip": [
+                            {"field": "Category", "type": "nominal"},
+                            {
+                                "field": "Value",
+                                "type": "quantitative",
+                                "format": ",.0f",
+                                "title": "Value (£)"
+                            }
+                        ]
+                    }
+                },
+                use_container_width=True
+            )
+
+    # --------------------------------------------------
+    # DETAILED COMPARISON TABLE
+    # --------------------------------------------------
+
+    st.subheader("Detailed Financial Comparison")
 
     metrics = [
         ("Employees", "LatestEmployees", "PreviousEmployees", "integer"),
@@ -1007,29 +1157,62 @@ def show_accounts_comparison(c):
         })
 
     if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(
+            pd.DataFrame(rows),
+            use_container_width=True,
+            hide_index=True
+        )
     else:
         st.info("No comparable financial metrics are available.")
 
+    # --------------------------------------------------
+    # FINANCIAL COMMENTARY
+    # --------------------------------------------------
+
     st.subheader("Financial Trend")
-    st.write(build_financial_commentary(c))
+    st.markdown(
+        f"""
+        <div style="
+            background:#333335;
+            border-left:4px solid #8bd02f;
+            padding:16px 18px;
+            border-radius:6px;
+            color:#eeeeee;
+            line-height:1.6;
+            margin-bottom:18px;
+        ">
+            {build_financial_commentary(c)}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    # --------------------------------------------------
+    # PROFESSIONAL ADVISER CHANGES
+    # --------------------------------------------------
 
     st.subheader("Professional Adviser Changes")
+
     adviser_rows = [
         {
             "Adviser": "Accountant",
             "Latest": display_value(c.get("LatestAccountantName")),
             "Previous": display_value(c.get("PreviousAccountantName")),
-            "Changed": "Yes" if c.get("AccountantChanged") == 1 else "No"
+            "Changed": "YES" if c.get("AccountantChanged") == 1 else "NO"
         },
         {
             "Adviser": "Auditor",
             "Latest": display_value(c.get("LatestAuditorName")),
             "Previous": display_value(c.get("PreviousAuditorName")),
-            "Changed": "Yes" if c.get("AuditorChanged") == 1 else "No"
+            "Changed": "YES" if c.get("AuditorChanged") == 1 else "NO"
         }
     ]
-    st.dataframe(pd.DataFrame(adviser_rows), use_container_width=True, hide_index=True)
+
+    st.dataframe(
+        pd.DataFrame(adviser_rows),
+        use_container_width=True,
+        hide_index=True
+    )
 
 
 # ==================================================
