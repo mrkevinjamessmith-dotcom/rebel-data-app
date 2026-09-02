@@ -1770,15 +1770,14 @@ def create_postcode_area_map_figure(
     Create a postcode-area choropleth for the selected accountant.
 
     Improvements:
-    - much stronger Rebel green contrast
-    - discrete client-count bands rather than a muted continuous scale
-    - London inset so compact London postcode areas remain readable
-    - same figure is used in the app and in the downloadable PDF
+    - strong Rebel green contrast
+    - discrete client-count bands
+    - London shown in a separate panel so it does not cover the UK map
+    - same figure is used in the app and downloadable PDF
     """
 
     from matplotlib.patches import Polygon as MplPolygon, Rectangle
     from matplotlib.colors import ListedColormap, BoundaryNorm
-    from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
     geojson = get_postcode_area_geojson()
 
@@ -1796,12 +1795,12 @@ def create_postcode_area_map_figure(
         }
 
     colours = [
-        "#4a4a4c",
-        "#1f6f4a",
-        "#2f9654",
-        "#55b947",
-        "#86d52f",
-        "#d8f21e"
+        "#4a4a4c",   # 0
+        "#1f6f4a",   # 1-4
+        "#2f9654",   # 5-9
+        "#55b947",   # 10-19
+        "#86d52f",   # 20-49
+        "#d8f21e"    # 50+
     ]
 
     boundaries = [
@@ -1823,16 +1822,39 @@ def create_postcode_area_map_figure(
         cmap.N
     )
 
-    fig, ax = plt.subplots(
-        figsize=(8.4, 8.8)
+    # Separate national map and London panel.
+    fig = plt.figure(
+        figsize=(10.4, 8.6)
     )
 
     fig.patch.set_facecolor(
         REBEL_DARK
     )
 
+    grid = fig.add_gridspec(
+        1,
+        2,
+        width_ratios=[
+            2.3,
+            1
+        ],
+        wspace=0.05
+    )
+
+    ax = fig.add_subplot(
+        grid[0, 0]
+    )
+
+    london_ax = fig.add_subplot(
+        grid[0, 1]
+    )
+
     ax.set_facecolor(
         REBEL_DARK
+    )
+
+    london_ax.set_facecolor(
+        "#2f2f31"
     )
 
     feature_polygons = []
@@ -1877,6 +1899,7 @@ def create_postcode_area_map_figure(
             )
         )
 
+        # National map
         for polygon in polygons:
 
             if not polygon:
@@ -1907,6 +1930,25 @@ def create_postcode_area_map_figure(
                 patch
             )
 
+            # Draw same polygons in London panel.
+            london_patch = MplPolygon(
+                points,
+                closed=True,
+                facecolor=cmap(
+                    norm(
+                        client_count
+                    )
+                ),
+                edgecolor="white",
+                linewidth=0.75,
+                zorder=2
+            )
+
+            london_ax.add_patch(
+                london_patch
+            )
+
+    # National map framing.
     ax.set_xlim(
         -8.9,
         2.1
@@ -1926,12 +1968,70 @@ def create_postcode_area_map_figure(
         "off"
     )
 
-    ax.set_title(
+    # London panel framing.
+    london_ax.set_xlim(
+        -0.65,
+        0.35
+    )
+
+    london_ax.set_ylim(
+        51.25,
+        51.75
+    )
+
+    london_ax.set_aspect(
+        "equal",
+        adjustable="box"
+    )
+
+    london_ax.set_xticks(
+        []
+    )
+
+    london_ax.set_yticks(
+        []
+    )
+
+    for spine in london_ax.spines.values():
+
+        spine.set_edgecolor(
+            "white"
+        )
+
+        spine.set_linewidth(
+            1.2
+        )
+
+    london_ax.set_title(
+        "LONDON AREA",
+        color="white",
+        fontsize=11,
+        fontweight="bold",
+        pad=8
+    )
+
+    # Show the London extent on the main UK map.
+    london_box = Rectangle(
+        (-0.65, 51.25),
+        1.0,
+        0.50,
+        fill=False,
+        edgecolor="white",
+        linewidth=1.1,
+        linestyle="--",
+        zorder=5
+    )
+
+    ax.add_patch(
+        london_box
+    )
+
+    fig.suptitle(
         f"{accountant_name}\nClient distribution by postcode area",
         color="white",
         fontsize=15,
         fontweight="bold",
-        pad=17
+        y=0.98
     )
 
     mapped_clients = sum(
@@ -1946,112 +2046,7 @@ def create_postcode_area_map_figure(
         ]
     )
 
-    # London inset
-    inset = inset_axes(
-        ax,
-        width="43%",
-        height="38%",
-        loc="lower right",
-        borderpad=1.1
-    )
-
-    inset.set_facecolor(
-        "#2f2f31"
-    )
-
-    for (
-        area,
-        client_count,
-        polygons
-    ) in feature_polygons:
-
-        for polygon in polygons:
-
-            if not polygon:
-                continue
-
-            points = [
-                (
-                    float(point[0]),
-                    float(point[1])
-                )
-                for point in polygon
-            ]
-
-            patch = MplPolygon(
-                points,
-                closed=True,
-                facecolor=cmap(
-                    norm(
-                        client_count
-                    )
-                ),
-                edgecolor="white",
-                linewidth=0.75,
-                zorder=2
-            )
-
-            inset.add_patch(
-                patch
-            )
-
-    inset.set_xlim(
-        -0.65,
-        0.35
-    )
-
-    inset.set_ylim(
-        51.25,
-        51.75
-    )
-
-    inset.set_aspect(
-        "equal",
-        adjustable="box"
-    )
-
-    inset.set_xticks(
-        []
-    )
-
-    inset.set_yticks(
-        []
-    )
-
-    for spine in inset.spines.values():
-
-        spine.set_edgecolor(
-            "white"
-        )
-
-        spine.set_linewidth(
-            1.2
-        )
-
-    inset.set_title(
-        "LONDON AREA",
-        color="white",
-        fontsize=10,
-        fontweight="bold",
-        pad=6
-    )
-
-    # Show the London extent on the national map.
-    london_box = Rectangle(
-        (-0.65, 51.25),
-        1.0,
-        0.50,
-        fill=False,
-        edgecolor="white",
-        linewidth=1.0,
-        linestyle="--",
-        zorder=5
-    )
-
-    ax.add_patch(
-        london_box
-    )
-
+    # Legend on main map.
     legend_labels = [
         ("50+", colours[5]),
         ("20-49", colours[4]),
@@ -2097,6 +2092,7 @@ def create_postcode_area_map_figure(
         "white"
     )
 
+    # Summary on main map.
     ax.text(
         0.02,
         0.055,
@@ -2124,7 +2120,39 @@ def create_postcode_area_map_figure(
         linespacing=1.35
     )
 
-    fig.tight_layout()
+    # London panel footer showing its total client count.
+    london_areas = {
+        "E", "EC", "N", "NW", "SE", "SW",
+        "W", "WC", "BR", "CR", "DA", "EN",
+        "HA", "IG", "KT", "RM", "SM", "TW",
+        "UB", "WD"
+    }
+
+    london_clients = sum(
+        count_lookup.get(
+            area,
+            0
+        )
+        for area in london_areas
+    )
+
+    london_ax.text(
+        0.5,
+        0.03,
+        f"{london_clients:,} clients in London-area postcodes",
+        transform=london_ax.transAxes,
+        ha="center",
+        va="bottom",
+        color="white",
+        fontsize=9
+    )
+
+    fig.subplots_adjust(
+        top=0.89,
+        left=0.03,
+        right=0.98,
+        bottom=0.04
+    )
 
     return fig
 
