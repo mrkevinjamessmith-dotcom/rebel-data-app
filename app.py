@@ -3,6 +3,24 @@ import pandas as pd
 import pymssql
 import math
 import time
+import io
+import re
+import requests
+import matplotlib.pyplot as plt
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_LEFT
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import mm
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle,
+    Image as RLImage,
+    PageBreak
+)
 
 
 # ==================================================
@@ -1587,6 +1605,937 @@ if not st.session_state[
 
 
 
+
+# ==================================================
+# ACCOUNTANT REPORT MAP / PDF HELPERS
+# ==================================================
+
+REBEL_GREEN = "#8bd02f"
+REBEL_DARK = "#3d3d3f"
+REBEL_LIGHT_GREY = "#d2d2d2"
+
+
+def normalise_postcode(value):
+
+    if value is None:
+        return None
+
+    postcode = str(value).strip().upper().replace(" ", "")
+
+    if postcode == "":
+        return None
+
+    if len(postcode) > 3:
+        postcode = postcode[:-3] + " " + postcode[-3:]
+
+    return postcode
+
+
+@st.cache_data(ttl=604800, show_spinner=False)
+def lookup_postcodes(postcodes_tuple):
+
+    """
+    Resolve UK postcodes to latitude / longitude using the free
+    postcodes.io bulk postcode endpoint.
+
+    Results are cached for 7 days by Streamlit.
+    """
+
+    postcodes = [
+        normalise_postcode(p)
+        for p in postcodes_tuple
+        if normalise_postcode(p)
+    ]
+
+    postcodes = list(dict.fromkeys(postcodes))
+
+    if not postcodes:
+        return pd.DataFrame(
+            columns=[
+                "Postcode",
+                "Latitude",
+                "Longitude"
+            ]
+        )
+
+    rows = []
+
+    for start in range(0, len(postcodes), 100):
+
+        batch = postcodes[
+            start:start + 100
+        ]
+
+        try:
+
+            response = requests.post(
+                "https://api.postcodes.io/postcodes",
+                json={
+                    "postcodes": batch
+                },
+                timeout=20
+            )
+
+            response.raise_for_status()
+
+            payload = response.json()
+
+            for item in payload.get(
+                "result",
+                []
+            ):
+
+                query = item.get("query")
+                result = item.get("result")
+
+                if not result:
+                    continue
+
+                latitude = result.get(
+                    "latitude"
+                )
+
+                longitude = result.get(
+                    "longitude"
+                )
+
+                if (
+                    latitude is None
+                    or longitude is None
+                ):
+                    continue
+
+                rows.append(
+                    {
+                        "Postcode": normalise_postcode(
+                            result.get(
+                                "postcode",
+                                query
+                            )
+                        ),
+                        "Latitude": float(
+                            latitude
+                        ),
+                        "Longitude": float(
+                            longitude
+                        )
+                    }
+                )
+
+        except Exception:
+            # A postcode lookup problem should not break the
+            # accountant detail page or PDF generation.
+            continue
+
+    return pd.DataFrame(rows)
+
+
+def get_accountant_map_data(
+    clients
+):
+
+    if (
+        clients is None
+        or len(clients) == 0
+        or "Postcode" not in clients.columns
+    ):
+
+        return pd.DataFrame(
+            columns=[
+                "Postcode",
+                "Latitude",
+                "Longitude"
+            ]
+        )
+
+    postcodes = [
+        normalise_postcode(value)
+        for value in clients[
+            "Postcode"
+        ].tolist()
+    ]
+
+    postcodes = [
+        value
+        for value in postcodes
+        if value
+    ]
+
+    if not postcodes:
+
+        return pd.DataFrame(
+            columns=[
+                "Postcode",
+                "Latitude",
+                "Longitude"
+            ]
+        )
+
+    return lookup_postcodes(
+        tuple(
+            sorted(
+                set(postcodes)
+            )
+        )
+    )
+
+
+def create_uk_client_map_figure(
+    map_data,
+    accountant_name
+):
+
+    """
+    Create a Rebel branded UK postcode distribution map.
+
+    A lightweight UK outline is used so the application does not
+    depend on external map tiles or heavyweight GIS packages.
+    """
+
+    fig, ax = plt.subplots(
+        figsize=(6.6, 7.6)
+    )
+
+    fig.patch.set_facecolor(
+        REBEL_DARK
+    )
+
+    ax.set_facecolor(
+        REBEL_DARK
+    )
+
+    # Coarse Great Britain outline for visual context.
+    gb_outline = [
+        (-5.72, 50.05),
+        (-4.60, 50.25),
+        (-3.50, 50.25),
+        (-2.70, 50.55),
+        (-1.25, 50.72),
+        (0.75, 50.75),
+        (1.65, 51.05),
+        (1.15, 52.05),
+        (0.15, 52.80),
+        (0.10, 53.55),
+        (-0.35, 54.10),
+        (-1.15, 54.65),
+        (-1.70, 55.25),
+        (-2.10, 55.85),
+        (-2.75, 56.30),
+        (-2.35, 57.05),
+        (-3.05, 57.70),
+        (-4.20, 58.65),
+        (-5.05, 58.62),
+        (-5.55, 57.95),
+        (-5.05, 57.15),
+        (-5.85, 56.55),
+        (-5.55, 55.55),
+        (-4.85, 54.80),
+        (-4.55, 54.30),
+        (-3.65, 54.10),
+        (-3.10, 53.35),
+        (-3.15, 52.65),
+        (-4.25, 52.15),
+        (-4.90, 51.60),
+        (-5.25, 51.15),
+        (-5.72, 50.05)
+    ]
+
+    x = [
+        point[0]
+        for point in gb_outline
+    ]
+
+    y = [
+        point[1]
+        for point in gb_outline
+    ]
+
+    ax.fill(
+        x,
+        y,
+        facecolor="#4b4b4d",
+        edgecolor="#b7b7b7",
+        linewidth=1.0,
+        zorder=1
+    )
+
+    # Northern Ireland outline, also deliberately lightweight.
+    ni_outline = [
+        (-8.20, 54.05),
+        (-7.55, 54.05),
+        (-6.65, 54.10),
+        (-5.55, 54.55),
+        (-5.45, 55.20),
+        (-6.15, 55.35),
+        (-7.20, 55.30),
+        (-8.10, 54.85),
+        (-8.20, 54.05)
+    ]
+
+    ax.fill(
+        [p[0] for p in ni_outline],
+        [p[1] for p in ni_outline],
+        facecolor="#4b4b4d",
+        edgecolor="#b7b7b7",
+        linewidth=1.0,
+        zorder=1
+    )
+
+    if (
+        map_data is not None
+        and len(map_data) > 0
+    ):
+
+        ax.scatter(
+            map_data["Longitude"],
+            map_data["Latitude"],
+            s=24,
+            c=REBEL_GREEN,
+            alpha=0.72,
+            edgecolors="none",
+            zorder=3
+        )
+
+    ax.set_xlim(
+        -8.8,
+        2.2
+    )
+
+    ax.set_ylim(
+        49.7,
+        59.1
+    )
+
+    ax.set_aspect(
+        "equal",
+        adjustable="box"
+    )
+
+    ax.axis(
+        "off"
+    )
+
+    ax.set_title(
+        f"{accountant_name}\nClient registered locations",
+        color="white",
+        fontsize=15,
+        fontweight="bold",
+        pad=18
+    )
+
+    mapped_count = (
+        len(map_data)
+        if map_data is not None
+        else 0
+    )
+
+    ax.text(
+        0.5,
+        0.015,
+        f"{mapped_count:,} unique UK postcodes mapped",
+        transform=ax.transAxes,
+        ha="center",
+        va="bottom",
+        color=REBEL_LIGHT_GREY,
+        fontsize=10
+    )
+
+    fig.tight_layout()
+
+    return fig
+
+
+def figure_to_png_bytes(
+    fig
+):
+
+    buffer = io.BytesIO()
+
+    fig.savefig(
+        buffer,
+        format="png",
+        dpi=180,
+        bbox_inches="tight",
+        facecolor=fig.get_facecolor()
+    )
+
+    buffer.seek(0)
+
+    return buffer.getvalue()
+
+
+def format_pdf_money(
+    value
+):
+
+    number = to_number(value)
+
+    if number is None:
+        return "Not available"
+
+    return f"£{number:,.0f}"
+
+
+def create_accountant_report_pdf(
+    accountant_name,
+    detail,
+    top_clients,
+    all_clients,
+    map_png_bytes,
+    mapped_postcodes
+):
+
+    """
+    Generate a branded Rebel Data accountant intelligence report
+    entirely in memory and return the PDF bytes.
+    """
+
+    output = io.BytesIO()
+
+    doc = SimpleDocTemplate(
+        output,
+        pagesize=A4,
+        rightMargin=16 * mm,
+        leftMargin=16 * mm,
+        topMargin=17 * mm,
+        bottomMargin=16 * mm,
+        title=f"Rebel Data - {accountant_name}",
+        author="Rebel Data"
+    )
+
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        "RebelTitle",
+        parent=styles["Title"],
+        fontName="Helvetica-Bold",
+        fontSize=24,
+        leading=27,
+        textColor=colors.HexColor(
+            REBEL_GREEN
+        ),
+        alignment=TA_LEFT,
+        spaceAfter=4 * mm
+    )
+
+    subtitle_style = ParagraphStyle(
+        "RebelSubtitle",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=10,
+        leading=14,
+        textColor=colors.HexColor(
+            "#666666"
+        ),
+        spaceAfter=6 * mm
+    )
+
+    h2_style = ParagraphStyle(
+        "RebelH2",
+        parent=styles["Heading2"],
+        fontName="Helvetica-Bold",
+        fontSize=14,
+        leading=17,
+        textColor=colors.HexColor(
+            REBEL_DARK
+        ),
+        spaceBefore=4 * mm,
+        spaceAfter=3 * mm
+    )
+
+    body_style = ParagraphStyle(
+        "RebelBody",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=9.5,
+        leading=14,
+        textColor=colors.HexColor(
+            "#333333"
+        )
+    )
+
+    story = []
+
+    story.append(
+        Paragraph(
+            "Rebel Data",
+            title_style
+        )
+    )
+
+    story.append(
+        Paragraph(
+            "UK Business Intelligence - Accountant Intelligence Report",
+            subtitle_style
+        )
+    )
+
+    story.append(
+        Paragraph(
+            accountant_name,
+            ParagraphStyle(
+                "AccountantName",
+                parent=h2_style,
+                fontSize=19,
+                leading=22,
+                textColor=colors.HexColor(
+                    REBEL_DARK
+                ),
+                spaceAfter=5 * mm
+            )
+        )
+    )
+
+    metric_data = [
+        [
+            "Clients",
+            "Very High",
+            "High",
+            "Contact Now",
+            "Referral Score"
+        ],
+        [
+            f"{int(detail.get('RDRelevantClients') or 0):,}",
+            f"{int(detail.get('VeryHighRDClients') or 0):,}",
+            f"{int(detail.get('HighRDClients') or 0):,}",
+            f"{int(detail.get('ContactNowClients') or 0):,}",
+            f"{int(detail.get('ReferralOpportunityScore') or 0)}/100"
+        ]
+    ]
+
+    metric_table = Table(
+        metric_data,
+        colWidths=[
+            34 * mm,
+            34 * mm,
+            34 * mm,
+            34 * mm,
+            34 * mm
+        ]
+    )
+
+    metric_table.setStyle(
+        TableStyle(
+            [
+                (
+                    "BACKGROUND",
+                    (0, 0),
+                    (-1, 0),
+                    colors.HexColor(
+                        REBEL_DARK
+                    )
+                ),
+                (
+                    "TEXTCOLOR",
+                    (0, 0),
+                    (-1, 0),
+                    colors.white
+                ),
+                (
+                    "BACKGROUND",
+                    (0, 1),
+                    (-1, 1),
+                    colors.HexColor(
+                        "#f4f4f4"
+                    )
+                ),
+                (
+                    "TEXTCOLOR",
+                    (0, 1),
+                    (-1, 1),
+                    colors.HexColor(
+                        REBEL_GREEN
+                    )
+                ),
+                (
+                    "FONTNAME",
+                    (0, 0),
+                    (-1, -1),
+                    "Helvetica-Bold"
+                ),
+                (
+                    "FONTSIZE",
+                    (0, 0),
+                    (-1, 0),
+                    8
+                ),
+                (
+                    "FONTSIZE",
+                    (0, 1),
+                    (-1, 1),
+                    13
+                ),
+                (
+                    "ALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "CENTER"
+                ),
+                (
+                    "VALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "MIDDLE"
+                ),
+                (
+                    "BOX",
+                    (0, 0),
+                    (-1, -1),
+                    0.5,
+                    colors.HexColor(
+                        "#d0d0d0"
+                    )
+                ),
+                (
+                    "INNERGRID",
+                    (0, 0),
+                    (-1, -1),
+                    0.25,
+                    colors.HexColor(
+                        "#dedede"
+                    )
+                ),
+                (
+                    "TOPPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    7
+                ),
+                (
+                    "BOTTOMPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    7
+                )
+            ]
+        )
+    )
+
+    story.append(
+        metric_table
+    )
+
+    story.append(
+        Spacer(
+            1,
+            6 * mm
+        )
+    )
+
+    rd_clients = int(
+        detail.get(
+            "RDRelevantClients"
+        )
+        or 0
+    )
+
+    very_high = int(
+        detail.get(
+            "VeryHighRDClients"
+        )
+        or 0
+    )
+
+    high = int(
+        detail.get(
+            "HighRDClients"
+        )
+        or 0
+    )
+
+    contact_now = int(
+        detail.get(
+            "ContactNowClients"
+        )
+        or 0
+    )
+
+    story.append(
+        Paragraph(
+            "Accountant snapshot",
+            h2_style
+        )
+    )
+
+    story.append(
+        Paragraph(
+            (
+                f"{accountant_name} has {rd_clients:,} clients identified "
+                f"in Rebel Data, including {very_high:,} Very High and "
+                f"{high:,} High opportunities. {contact_now:,} are currently "
+                f"classified as Contact Now. The overall referral opportunity "
+                f"score is {int(detail.get('ReferralOpportunityScore') or 0)}/100 "
+                f"and the practice is classified as "
+                f"{detail.get('ReferralOpportunityBand') or 'Not available'}."
+            ),
+            body_style
+        )
+    )
+
+    story.append(
+        Paragraph(
+            "Top 3 clients",
+            h2_style
+        )
+    )
+
+    if (
+        top_clients is not None
+        and len(top_clients) > 0
+    ):
+
+        top_table_data = [
+            [
+                "Company",
+                "Location",
+                "R&D Score",
+                "Opportunity",
+                "Timing"
+            ]
+        ]
+
+        for _, row in top_clients.iterrows():
+
+            location_parts = [
+                row.get("Town"),
+                row.get("County"),
+                row.get("Postcode")
+            ]
+
+            location = ", ".join(
+                [
+                    str(value)
+                    for value in location_parts
+                    if value is not None
+                    and str(value).strip() != ""
+                ]
+            )
+
+            top_table_data.append(
+                [
+                    Paragraph(
+                        str(
+                            row.get(
+                                "Company Name",
+                                ""
+                            )
+                        ),
+                        body_style
+                    ),
+                    Paragraph(
+                        location
+                        or "Not available",
+                        body_style
+                    ),
+                    str(
+                        row.get(
+                            "R&D Score",
+                            ""
+                        )
+                    ),
+                    str(
+                        row.get(
+                            "Opportunity",
+                            ""
+                        )
+                    ),
+                    str(
+                        row.get(
+                            "Timing",
+                            ""
+                        )
+                    )
+                ]
+            )
+
+        top_table = Table(
+            top_table_data,
+            colWidths=[
+                56 * mm,
+                48 * mm,
+                22 * mm,
+                27 * mm,
+                27 * mm
+            ],
+            repeatRows=1
+        )
+
+        top_table.setStyle(
+            TableStyle(
+                [
+                    (
+                        "BACKGROUND",
+                        (0, 0),
+                        (-1, 0),
+                        colors.HexColor(
+                            REBEL_DARK
+                        )
+                    ),
+                    (
+                        "TEXTCOLOR",
+                        (0, 0),
+                        (-1, 0),
+                        colors.white
+                    ),
+                    (
+                        "FONTNAME",
+                        (0, 0),
+                        (-1, 0),
+                        "Helvetica-Bold"
+                    ),
+                    (
+                        "FONTSIZE",
+                        (0, 0),
+                        (-1, -1),
+                        8
+                    ),
+                    (
+                        "VALIGN",
+                        (0, 0),
+                        (-1, -1),
+                        "TOP"
+                    ),
+                    (
+                        "GRID",
+                        (0, 0),
+                        (-1, -1),
+                        0.4,
+                        colors.HexColor(
+                            "#d7d7d7"
+                        )
+                    ),
+                    (
+                        "ROWBACKGROUNDS",
+                        (0, 1),
+                        (-1, -1),
+                        [
+                            colors.white,
+                            colors.HexColor(
+                                "#f4f4f4"
+                            )
+                        ]
+                    ),
+                    (
+                        "TOPPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        5
+                    ),
+                    (
+                        "BOTTOMPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        5
+                    )
+                ]
+            )
+        )
+
+        story.append(
+            top_table
+        )
+
+    else:
+
+        story.append(
+            Paragraph(
+                "No top client opportunities are currently available.",
+                body_style
+            )
+        )
+
+    story.append(
+        PageBreak()
+    )
+
+    story.append(
+        Paragraph(
+            "Client locations",
+            h2_style
+        )
+    )
+
+    total_postcodes = 0
+
+    if (
+        all_clients is not None
+        and len(all_clients) > 0
+        and "Postcode" in all_clients.columns
+    ):
+
+        total_postcodes = len(
+            {
+                normalise_postcode(value)
+                for value in all_clients[
+                    "Postcode"
+                ].tolist()
+                if normalise_postcode(
+                    value
+                )
+            }
+        )
+
+    story.append(
+        Paragraph(
+            (
+                f"{mapped_postcodes:,} of {total_postcodes:,} unique client "
+                f"postcodes were successfully mapped."
+            ),
+            body_style
+        )
+    )
+
+    story.append(
+        Spacer(
+            1,
+            3 * mm
+        )
+    )
+
+    if map_png_bytes:
+
+        map_buffer = io.BytesIO(
+            map_png_bytes
+        )
+
+        story.append(
+            RLImage(
+                map_buffer,
+                width=145 * mm,
+                height=165 * mm
+            )
+        )
+
+    story.append(
+        Spacer(
+            1,
+            5 * mm
+        )
+    )
+
+    story.append(
+        Paragraph(
+            "Rebel Data | UK Business Intelligence",
+            ParagraphStyle(
+                "Footer",
+                parent=body_style,
+                fontName="Helvetica-Bold",
+                textColor=colors.HexColor(
+                    REBEL_GREEN
+                )
+            )
+        )
+    )
+
+    doc.build(
+        story
+    )
+
+    output.seek(0)
+
+    return output.getvalue()
+
+
 # ==================================================
 # MAIN APP
 # ==================================================
@@ -2036,6 +2985,9 @@ def get_rd_accountant_clients(
             SELECT
                 CompanyNumber AS [Company Number],
                 CompanyName AS [Company Name],
+                PostTown AS [Town],
+                County AS [County],
+                PostCode AS [Postcode],
                 BestRDCategory AS [R&D Category],
                 BestSICDescription AS [Industry],
                 LatestEmployees AS [Employees],
@@ -3506,11 +4458,153 @@ def show_rd_referral_page():
                     "No client opportunities are currently available."
                 )
 
+                top_clients = pd.DataFrame()
+
         except Exception:
 
             st.warning(
                 "Unable to load the top client snapshot."
             )
+
+            top_clients = pd.DataFrame()
+
+
+        # --------------------------------------------------
+        # CLIENT LOCATION MAP
+        # --------------------------------------------------
+
+        st.markdown(
+            "#### Client Locations"
+        )
+
+        try:
+
+            with st.spinner(
+                "Mapping client registered postcodes..."
+            ):
+
+                map_clients = get_rd_accountant_clients(
+                    selected_accountant,
+                    "All"
+                )
+
+                map_data = get_accountant_map_data(
+                    map_clients
+                )
+
+                map_figure = create_uk_client_map_figure(
+                    map_data,
+                    selected_accountant
+                )
+
+                map_png = figure_to_png_bytes(
+                    map_figure
+                )
+
+            total_unique_postcodes = len(
+                {
+                    normalise_postcode(value)
+                    for value in map_clients[
+                        "Postcode"
+                    ].tolist()
+                    if normalise_postcode(
+                        value
+                    )
+                }
+            )
+
+            mapped_unique_postcodes = len(
+                map_data
+            )
+
+            map_col, stats_col = st.columns(
+                [2.2, 1]
+            )
+
+            with map_col:
+
+                st.pyplot(
+                    map_figure,
+                    use_container_width=True
+                )
+
+            with stats_col:
+
+                st.metric(
+                    "CLIENTS",
+                    f"{len(map_clients):,}"
+                )
+
+                st.metric(
+                    "UNIQUE POSTCODES",
+                    f"{total_unique_postcodes:,}"
+                )
+
+                st.metric(
+                    "MAPPED",
+                    f"{mapped_unique_postcodes:,}"
+                )
+
+                if total_unique_postcodes > 0:
+
+                    map_rate = (
+                        mapped_unique_postcodes
+                        / total_unique_postcodes
+                    ) * 100
+
+                    st.metric(
+                        "MAP COVERAGE",
+                        f"{map_rate:.1f}%"
+                    )
+
+            plt.close(
+                map_figure
+            )
+
+            # ----------------------------------------------
+            # BRANDED PDF REPORT
+            # ----------------------------------------------
+
+            with st.spinner(
+                "Building Rebel Data report..."
+            ):
+
+                report_pdf = create_accountant_report_pdf(
+                    selected_accountant,
+                    detail,
+                    top_clients,
+                    map_clients,
+                    map_png,
+                    mapped_unique_postcodes
+                )
+
+            safe_accountant_name = re.sub(
+                r"[^A-Za-z0-9_-]+",
+                "_",
+                selected_accountant
+            ).strip("_")
+
+            st.download_button(
+                label="DOWNLOAD ACCOUNTANT REPORT PDF",
+                data=report_pdf,
+                file_name=(
+                    f"Rebel_Data_{safe_accountant_name}_Report.pdf"
+                ),
+                mime="application/pdf",
+                key="rd_accountant_pdf"
+            )
+
+        except Exception as map_error:
+
+            st.warning(
+                "The accountant snapshot loaded, but the postcode map "
+                "or PDF report could not be generated."
+            )
+
+            st.exception(
+                map_error
+            )
+
 
         st.markdown(
             "#### Potential Clients"
