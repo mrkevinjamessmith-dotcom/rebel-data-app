@@ -1768,13 +1768,17 @@ def create_postcode_area_map_figure(
 
     """
     Create a postcode-area choropleth for the selected accountant.
-    Postcode areas with more clients are shown in stronger Rebel green.
-    Areas with no clients remain dark grey.
+
+    Improvements:
+    - much stronger Rebel green contrast
+    - discrete client-count bands rather than a muted continuous scale
+    - London inset so compact London postcode areas remain readable
+    - same figure is used in the app and in the downloadable PDF
     """
 
-    from matplotlib.colors import LinearSegmentedColormap, Normalize
-    from matplotlib.patches import Polygon as MplPolygon
-    from matplotlib.cm import ScalarMappable
+    from matplotlib.patches import Polygon as MplPolygon, Rectangle
+    from matplotlib.colors import ListedColormap, BoundaryNorm
+    from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
     geojson = get_postcode_area_geojson()
 
@@ -1791,13 +1795,36 @@ def create_postcode_area_map_figure(
             for _, row in area_counts.iterrows()
         }
 
-    max_clients = max(
-        count_lookup.values(),
-        default=1
+    colours = [
+        "#4a4a4c",
+        "#1f6f4a",
+        "#2f9654",
+        "#55b947",
+        "#86d52f",
+        "#d8f21e"
+    ]
+
+    boundaries = [
+        -0.5,
+        0.5,
+        4.5,
+        9.5,
+        19.5,
+        49.5,
+        1000000
+    ]
+
+    cmap = ListedColormap(
+        colours
+    )
+
+    norm = BoundaryNorm(
+        boundaries,
+        cmap.N
     )
 
     fig, ax = plt.subplots(
-        figsize=(7.4, 8.4)
+        figsize=(8.4, 8.8)
     )
 
     fig.patch.set_facecolor(
@@ -1808,22 +1835,7 @@ def create_postcode_area_map_figure(
         REBEL_DARK
     )
 
-    rebel_cmap = LinearSegmentedColormap.from_list(
-        "rebel_postcode_area",
-        [
-            "#4a4a4c",
-            "#5e7b38",
-            REBEL_GREEN
-        ]
-    )
-
-    norm = Normalize(
-        vmin=0,
-        vmax=max_clients
-    )
-
-    all_longitudes = []
-    all_latitudes = []
+    feature_polygons = []
 
     for feature in geojson.get(
         "features",
@@ -1847,25 +1859,25 @@ def create_postcode_area_map_figure(
             0
         )
 
-        if client_count > 0:
-
-            face_colour = rebel_cmap(
-                norm(
-                    client_count
-                )
-            )
-
-        else:
-
-            face_colour = "#48484a"
-
         geometry = feature.get(
             "geometry"
         )
 
-        for polygon in _geometry_polygons(
-            geometry
-        ):
+        polygons = list(
+            _geometry_polygons(
+                geometry
+            )
+        )
+
+        feature_polygons.append(
+            (
+                area,
+                client_count,
+                polygons
+            )
+        )
+
+        for polygon in polygons:
 
             if not polygon:
                 continue
@@ -1878,26 +1890,16 @@ def create_postcode_area_map_figure(
                 for point in polygon
             ]
 
-            all_longitudes.extend(
-                [
-                    point[0]
-                    for point in points
-                ]
-            )
-
-            all_latitudes.extend(
-                [
-                    point[1]
-                    for point in points
-                ]
-            )
-
             patch = MplPolygon(
                 points,
                 closed=True,
-                facecolor=face_colour,
-                edgecolor="#9a9a9c",
-                linewidth=0.28,
+                facecolor=cmap(
+                    norm(
+                        client_count
+                    )
+                ),
+                edgecolor="#c6c6c8",
+                linewidth=0.38,
                 zorder=2
             )
 
@@ -1905,7 +1907,6 @@ def create_postcode_area_map_figure(
                 patch
             )
 
-    # Fixed UK framing keeps every accountant report visually consistent.
     ax.set_xlim(
         -8.9,
         2.1
@@ -1933,6 +1934,10 @@ def create_postcode_area_map_figure(
         pad=17
     )
 
+    mapped_clients = sum(
+        count_lookup.values()
+    )
+
     active_areas = len(
         [
             value
@@ -1941,57 +1946,183 @@ def create_postcode_area_map_figure(
         ]
     )
 
-    mapped_clients = sum(
-        count_lookup.values()
+    # London inset
+    inset = inset_axes(
+        ax,
+        width="43%",
+        height="38%",
+        loc="lower right",
+        borderpad=1.1
+    )
+
+    inset.set_facecolor(
+        "#2f2f31"
+    )
+
+    for (
+        area,
+        client_count,
+        polygons
+    ) in feature_polygons:
+
+        for polygon in polygons:
+
+            if not polygon:
+                continue
+
+            points = [
+                (
+                    float(point[0]),
+                    float(point[1])
+                )
+                for point in polygon
+            ]
+
+            patch = MplPolygon(
+                points,
+                closed=True,
+                facecolor=cmap(
+                    norm(
+                        client_count
+                    )
+                ),
+                edgecolor="white",
+                linewidth=0.75,
+                zorder=2
+            )
+
+            inset.add_patch(
+                patch
+            )
+
+    inset.set_xlim(
+        -0.65,
+        0.35
+    )
+
+    inset.set_ylim(
+        51.25,
+        51.75
+    )
+
+    inset.set_aspect(
+        "equal",
+        adjustable="box"
+    )
+
+    inset.set_xticks(
+        []
+    )
+
+    inset.set_yticks(
+        []
+    )
+
+    for spine in inset.spines.values():
+
+        spine.set_edgecolor(
+            "white"
+        )
+
+        spine.set_linewidth(
+            1.2
+        )
+
+    inset.set_title(
+        "LONDON AREA",
+        color="white",
+        fontsize=10,
+        fontweight="bold",
+        pad=6
+    )
+
+    # Show the London extent on the national map.
+    london_box = Rectangle(
+        (-0.65, 51.25),
+        1.0,
+        0.50,
+        fill=False,
+        edgecolor="white",
+        linewidth=1.0,
+        linestyle="--",
+        zorder=5
+    )
+
+    ax.add_patch(
+        london_box
+    )
+
+    legend_labels = [
+        ("50+", colours[5]),
+        ("20-49", colours[4]),
+        ("10-19", colours[3]),
+        ("5-9", colours[2]),
+        ("1-4", colours[1]),
+        ("0", colours[0])
+    ]
+
+    legend_handles = [
+        Rectangle(
+            (0, 0),
+            1,
+            1,
+            facecolor=colour,
+            edgecolor="#c6c6c8"
+        )
+        for _, colour in legend_labels
+    ]
+
+    legend = ax.legend(
+        legend_handles,
+        [
+            label
+            for label, _
+            in legend_labels
+        ],
+        title="CLIENTS",
+        loc="upper left",
+        bbox_to_anchor=(
+            0.01,
+            0.93
+        ),
+        frameon=True,
+        facecolor="#2f2f31",
+        edgecolor="#5f5f61",
+        labelcolor="white",
+        fontsize=9,
+        title_fontsize=9
+    )
+
+    legend.get_title().set_color(
+        "white"
     )
 
     ax.text(
-        0.5,
-        0.012,
+        0.02,
+        0.055,
+        f"{mapped_clients:,}",
+        transform=ax.transAxes,
+        ha="left",
+        va="bottom",
+        color=REBEL_GREEN,
+        fontsize=28,
+        fontweight="bold"
+    )
+
+    ax.text(
+        0.02,
+        0.018,
         (
-            f"{mapped_clients:,} clients across "
+            f"clients across\n"
             f"{active_areas:,} postcode areas"
         ),
         transform=ax.transAxes,
-        ha="center",
+        ha="left",
         va="bottom",
-        color=REBEL_LIGHT_GREY,
-        fontsize=10
+        color="white",
+        fontsize=11,
+        linespacing=1.35
     )
-
-    if count_lookup:
-
-        scalar = ScalarMappable(
-            norm=norm,
-            cmap=rebel_cmap
-        )
-
-        scalar.set_array(
-            []
-        )
-
-        colour_bar = fig.colorbar(
-            scalar,
-            ax=ax,
-            fraction=0.035,
-            pad=0.015,
-            shrink=0.66
-        )
-
-        colour_bar.set_label(
-            "Clients",
-            color="white",
-            fontsize=9
-        )
-
-        colour_bar.ax.tick_params(
-            colors="white",
-            labelsize=8
-        )
-
-        colour_bar.outline.set_edgecolor(
-            "#8a8a8c"
-        )
 
     fig.tight_layout()
 
@@ -4666,7 +4797,7 @@ def show_rd_referral_page():
         # --------------------------------------------------
 
         st.markdown(
-            "#### Client Distribution"
+            "#### Client Distribution by Postcode Area"
         )
 
         try:
