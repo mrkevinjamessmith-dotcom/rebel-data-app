@@ -1,3 +1,6 @@
 streamlit
 pandas
 pymssql
+requests
+matplotlib
+reportlab
