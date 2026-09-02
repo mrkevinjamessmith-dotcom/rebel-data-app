@@ -1614,123 +1614,82 @@ REBEL_GREEN = "#8bd02f"
 REBEL_DARK = "#3d3d3f"
 REBEL_LIGHT_GREY = "#d2d2d2"
 
+POSTCODE_AREA_GEOJSON_URL = (
+    "https://gist.githubusercontent.com/cgddrd/"
+    "1a34e6ca8c5c2f8731346a5ff24fe1c9/raw/"
+    "ec220207dbf2685ca6bc6df7042cd803d6260bb3/"
+    "uk-postcode-areas.geojson"
+)
+
 
 def normalise_postcode(value):
 
     if value is None:
         return None
 
-    postcode = str(value).strip().upper().replace(" ", "")
+    postcode = str(value).strip().upper()
 
     if postcode == "":
         return None
 
-    if len(postcode) > 3:
-        postcode = postcode[:-3] + " " + postcode[-3:]
-
     return postcode
 
 
+def get_postcode_area(value):
+
+    """
+    Extract the UK postcode area from a postcode.
+
+    Examples:
+        GL1 2AA   -> GL
+        SW1A 1AA  -> SW
+        B1 1AA    -> B
+    """
+
+    postcode = normalise_postcode(
+        value
+    )
+
+    if not postcode:
+        return None
+
+    compact = postcode.replace(
+        " ",
+        ""
+    )
+
+    match = re.match(
+        r"^(GIR|[A-Z]{1,2})",
+        compact
+    )
+
+    if not match:
+        return None
+
+    return match.group(1)
+
+
 @st.cache_data(ttl=604800, show_spinner=False)
-def lookup_postcodes(postcodes_tuple):
+def get_postcode_area_geojson():
 
     """
-    Resolve UK postcodes to latitude / longitude using the free
-    postcodes.io bulk postcode endpoint.
+    Load postcode-area boundary polygons.
 
-    Results are cached for 7 days by Streamlit.
+    The GeoJSON contains UK postcode-area boundaries. It is cached
+    for seven days so normal app use does not repeatedly download it.
     """
 
-    postcodes = [
-        normalise_postcode(p)
-        for p in postcodes_tuple
-        if normalise_postcode(p)
-    ]
+    response = requests.get(
+        POSTCODE_AREA_GEOJSON_URL,
+        timeout=30
+    )
 
-    postcodes = list(dict.fromkeys(postcodes))
+    response.raise_for_status()
 
-    if not postcodes:
-        return pd.DataFrame(
-            columns=[
-                "Postcode",
-                "Latitude",
-                "Longitude"
-            ]
-        )
-
-    rows = []
-
-    for start in range(0, len(postcodes), 100):
-
-        batch = postcodes[
-            start:start + 100
-        ]
-
-        try:
-
-            response = requests.post(
-                "https://api.postcodes.io/postcodes",
-                json={
-                    "postcodes": batch
-                },
-                timeout=20
-            )
-
-            response.raise_for_status()
-
-            payload = response.json()
-
-            for item in payload.get(
-                "result",
-                []
-            ):
-
-                query = item.get("query")
-                result = item.get("result")
-
-                if not result:
-                    continue
-
-                latitude = result.get(
-                    "latitude"
-                )
-
-                longitude = result.get(
-                    "longitude"
-                )
-
-                if (
-                    latitude is None
-                    or longitude is None
-                ):
-                    continue
-
-                rows.append(
-                    {
-                        "Postcode": normalise_postcode(
-                            result.get(
-                                "postcode",
-                                query
-                            )
-                        ),
-                        "Latitude": float(
-                            latitude
-                        ),
-                        "Longitude": float(
-                            longitude
-                        )
-                    }
-                )
-
-        except Exception:
-            # A postcode lookup problem should not break the
-            # accountant detail page or PDF generation.
-            continue
-
-    return pd.DataFrame(rows)
+    return response.json()
 
 
-def get_accountant_map_data(
+def build_postcode_area_counts(
     clients
 ):
 
@@ -1742,58 +1701,103 @@ def get_accountant_map_data(
 
         return pd.DataFrame(
             columns=[
-                "Postcode",
-                "Latitude",
-                "Longitude"
+                "Postcode Area",
+                "Clients"
             ]
         )
 
-    postcodes = [
-        normalise_postcode(value)
-        for value in clients[
-            "Postcode"
-        ].tolist()
-    ]
+    areas = clients[
+        "Postcode"
+    ].apply(
+        get_postcode_area
+    )
 
-    postcodes = [
-        value
-        for value in postcodes
-        if value
-    ]
-
-    if not postcodes:
-
-        return pd.DataFrame(
-            columns=[
-                "Postcode",
-                "Latitude",
-                "Longitude"
-            ]
+    counts = (
+        areas
+        .dropna()
+        .value_counts()
+        .rename_axis(
+            "Postcode Area"
         )
-
-    return lookup_postcodes(
-        tuple(
-            sorted(
-                set(postcodes)
-            )
+        .reset_index(
+            name="Clients"
         )
     )
 
+    return counts
 
-def create_uk_client_map_figure(
-    map_data,
+
+def _geometry_polygons(
+    geometry
+):
+
+    """
+    Yield exterior polygon coordinate arrays from GeoJSON Polygon
+    and MultiPolygon geometries.
+    """
+
+    if not geometry:
+        return
+
+    geometry_type = geometry.get(
+        "type"
+    )
+
+    coordinates = geometry.get(
+        "coordinates",
+        []
+    )
+
+    if geometry_type == "Polygon":
+
+        if coordinates:
+            yield coordinates[0]
+
+    elif geometry_type == "MultiPolygon":
+
+        for polygon in coordinates:
+
+            if polygon:
+                yield polygon[0]
+
+
+def create_postcode_area_map_figure(
+    area_counts,
     accountant_name
 ):
 
     """
-    Create a Rebel branded UK postcode distribution map.
-
-    A lightweight UK outline is used so the application does not
-    depend on external map tiles or heavyweight GIS packages.
+    Create a postcode-area choropleth for the selected accountant.
+    Postcode areas with more clients are shown in stronger Rebel green.
+    Areas with no clients remain dark grey.
     """
 
+    from matplotlib.colors import LinearSegmentedColormap, Normalize
+    from matplotlib.patches import Polygon as MplPolygon
+    from matplotlib.cm import ScalarMappable
+
+    geojson = get_postcode_area_geojson()
+
+    count_lookup = {}
+
+    if (
+        area_counts is not None
+        and len(area_counts) > 0
+    ):
+
+        count_lookup = {
+            str(row["Postcode Area"]).strip().upper():
+            int(row["Clients"])
+            for _, row in area_counts.iterrows()
+        }
+
+    max_clients = max(
+        count_lookup.values(),
+        default=1
+    )
+
     fig, ax = plt.subplots(
-        figsize=(6.6, 7.6)
+        figsize=(7.4, 8.4)
     )
 
     fig.patch.set_facecolor(
@@ -1804,106 +1808,112 @@ def create_uk_client_map_figure(
         REBEL_DARK
     )
 
-    # Coarse Great Britain outline for visual context.
-    gb_outline = [
-        (-5.72, 50.05),
-        (-4.60, 50.25),
-        (-3.50, 50.25),
-        (-2.70, 50.55),
-        (-1.25, 50.72),
-        (0.75, 50.75),
-        (1.65, 51.05),
-        (1.15, 52.05),
-        (0.15, 52.80),
-        (0.10, 53.55),
-        (-0.35, 54.10),
-        (-1.15, 54.65),
-        (-1.70, 55.25),
-        (-2.10, 55.85),
-        (-2.75, 56.30),
-        (-2.35, 57.05),
-        (-3.05, 57.70),
-        (-4.20, 58.65),
-        (-5.05, 58.62),
-        (-5.55, 57.95),
-        (-5.05, 57.15),
-        (-5.85, 56.55),
-        (-5.55, 55.55),
-        (-4.85, 54.80),
-        (-4.55, 54.30),
-        (-3.65, 54.10),
-        (-3.10, 53.35),
-        (-3.15, 52.65),
-        (-4.25, 52.15),
-        (-4.90, 51.60),
-        (-5.25, 51.15),
-        (-5.72, 50.05)
-    ]
-
-    x = [
-        point[0]
-        for point in gb_outline
-    ]
-
-    y = [
-        point[1]
-        for point in gb_outline
-    ]
-
-    ax.fill(
-        x,
-        y,
-        facecolor="#4b4b4d",
-        edgecolor="#b7b7b7",
-        linewidth=1.0,
-        zorder=1
+    rebel_cmap = LinearSegmentedColormap.from_list(
+        "rebel_postcode_area",
+        [
+            "#4a4a4c",
+            "#5e7b38",
+            REBEL_GREEN
+        ]
     )
 
-    # Northern Ireland outline, also deliberately lightweight.
-    ni_outline = [
-        (-8.20, 54.05),
-        (-7.55, 54.05),
-        (-6.65, 54.10),
-        (-5.55, 54.55),
-        (-5.45, 55.20),
-        (-6.15, 55.35),
-        (-7.20, 55.30),
-        (-8.10, 54.85),
-        (-8.20, 54.05)
-    ]
-
-    ax.fill(
-        [p[0] for p in ni_outline],
-        [p[1] for p in ni_outline],
-        facecolor="#4b4b4d",
-        edgecolor="#b7b7b7",
-        linewidth=1.0,
-        zorder=1
+    norm = Normalize(
+        vmin=0,
+        vmax=max_clients
     )
 
-    if (
-        map_data is not None
-        and len(map_data) > 0
+    all_longitudes = []
+    all_latitudes = []
+
+    for feature in geojson.get(
+        "features",
+        []
     ):
 
-        ax.scatter(
-            map_data["Longitude"],
-            map_data["Latitude"],
-            s=24,
-            c=REBEL_GREEN,
-            alpha=0.72,
-            edgecolors="none",
-            zorder=3
+        properties = feature.get(
+            "properties",
+            {}
         )
 
+        area = str(
+            properties.get(
+                "name",
+                ""
+            )
+        ).strip().upper()
+
+        client_count = count_lookup.get(
+            area,
+            0
+        )
+
+        if client_count > 0:
+
+            face_colour = rebel_cmap(
+                norm(
+                    client_count
+                )
+            )
+
+        else:
+
+            face_colour = "#48484a"
+
+        geometry = feature.get(
+            "geometry"
+        )
+
+        for polygon in _geometry_polygons(
+            geometry
+        ):
+
+            if not polygon:
+                continue
+
+            points = [
+                (
+                    float(point[0]),
+                    float(point[1])
+                )
+                for point in polygon
+            ]
+
+            all_longitudes.extend(
+                [
+                    point[0]
+                    for point in points
+                ]
+            )
+
+            all_latitudes.extend(
+                [
+                    point[1]
+                    for point in points
+                ]
+            )
+
+            patch = MplPolygon(
+                points,
+                closed=True,
+                facecolor=face_colour,
+                edgecolor="#9a9a9c",
+                linewidth=0.28,
+                zorder=2
+            )
+
+            ax.add_patch(
+                patch
+            )
+
+    # Fixed UK framing keeps every accountant report visually consistent.
     ax.set_xlim(
-        -8.8,
-        2.2
+        -8.9,
+        2.1
     )
 
     ax.set_ylim(
         49.7,
-        59.1
+        61.1
     )
 
     ax.set_aspect(
@@ -1916,29 +1926,72 @@ def create_uk_client_map_figure(
     )
 
     ax.set_title(
-        f"{accountant_name}\nClient registered locations",
+        f"{accountant_name}\nClient distribution by postcode area",
         color="white",
         fontsize=15,
         fontweight="bold",
-        pad=18
+        pad=17
     )
 
-    mapped_count = (
-        len(map_data)
-        if map_data is not None
-        else 0
+    active_areas = len(
+        [
+            value
+            for value in count_lookup.values()
+            if value > 0
+        ]
+    )
+
+    mapped_clients = sum(
+        count_lookup.values()
     )
 
     ax.text(
         0.5,
-        0.015,
-        f"{mapped_count:,} unique UK postcodes mapped",
+        0.012,
+        (
+            f"{mapped_clients:,} clients across "
+            f"{active_areas:,} postcode areas"
+        ),
         transform=ax.transAxes,
         ha="center",
         va="bottom",
         color=REBEL_LIGHT_GREY,
         fontsize=10
     )
+
+    if count_lookup:
+
+        scalar = ScalarMappable(
+            norm=norm,
+            cmap=rebel_cmap
+        )
+
+        scalar.set_array(
+            []
+        )
+
+        colour_bar = fig.colorbar(
+            scalar,
+            ax=ax,
+            fraction=0.035,
+            pad=0.015,
+            shrink=0.66
+        )
+
+        colour_bar.set_label(
+            "Clients",
+            color="white",
+            fontsize=9
+        )
+
+        colour_bar.ax.tick_params(
+            colors="white",
+            labelsize=8
+        )
+
+        colour_bar.outline.set_edgecolor(
+            "#8a8a8c"
+        )
 
     fig.tight_layout()
 
@@ -1954,7 +2007,7 @@ def figure_to_png_bytes(
     fig.savefig(
         buffer,
         format="png",
-        dpi=180,
+        dpi=200,
         bbox_inches="tight",
         facecolor=fig.get_facecolor()
     )
@@ -1982,7 +2035,7 @@ def create_accountant_report_pdf(
     top_clients,
     all_clients,
     map_png_bytes,
-    mapped_postcodes
+    area_counts
 ):
 
     """
@@ -2455,31 +2508,28 @@ def create_accountant_report_pdf(
         )
     )
 
-    total_postcodes = 0
+    mapped_clients = 0
+    mapped_areas = 0
 
     if (
-        all_clients is not None
-        and len(all_clients) > 0
-        and "Postcode" in all_clients.columns
+        area_counts is not None
+        and len(area_counts) > 0
     ):
 
-        total_postcodes = len(
-            {
-                normalise_postcode(value)
-                for value in all_clients[
-                    "Postcode"
-                ].tolist()
-                if normalise_postcode(
-                    value
-                )
-            }
+        mapped_clients = int(
+            area_counts["Clients"].sum()
+        )
+
+        mapped_areas = len(
+            area_counts
         )
 
     story.append(
         Paragraph(
             (
-                f"{mapped_postcodes:,} of {total_postcodes:,} unique client "
-                f"postcodes were successfully mapped."
+                f"{mapped_clients:,} clients are represented across "
+                f"{mapped_areas:,} UK postcode areas. Darker Rebel green "
+                f"indicates a greater concentration of clients."
             ),
             body_style
         )
@@ -2504,6 +2554,148 @@ def create_accountant_report_pdf(
                 width=145 * mm,
                 height=165 * mm
             )
+        )
+
+    if (
+        area_counts is not None
+        and len(area_counts) > 0
+    ):
+
+        story.append(
+            Spacer(
+                1,
+                3 * mm
+            )
+        )
+
+        story.append(
+            Paragraph(
+                "Top postcode areas",
+                h2_style
+            )
+        )
+
+        top_areas = (
+            area_counts
+            .sort_values(
+                "Clients",
+                ascending=False
+            )
+            .head(10)
+        )
+
+        area_table_data = [
+            [
+                "Postcode Area",
+                "Clients",
+                "% of mapped clients"
+            ]
+        ]
+
+        denominator = max(
+            mapped_clients,
+            1
+        )
+
+        for _, row in top_areas.iterrows():
+
+            clients_in_area = int(
+                row["Clients"]
+            )
+
+            area_table_data.append(
+                [
+                    str(
+                        row["Postcode Area"]
+                    ),
+                    f"{clients_in_area:,}",
+                    f"{(clients_in_area / denominator) * 100:.1f}%"
+                ]
+            )
+
+        area_table = Table(
+            area_table_data,
+            colWidths=[
+                55 * mm,
+                45 * mm,
+                55 * mm
+            ],
+            repeatRows=1
+        )
+
+        area_table.setStyle(
+            TableStyle(
+                [
+                    (
+                        "BACKGROUND",
+                        (0, 0),
+                        (-1, 0),
+                        colors.HexColor(
+                            REBEL_DARK
+                        )
+                    ),
+                    (
+                        "TEXTCOLOR",
+                        (0, 0),
+                        (-1, 0),
+                        colors.white
+                    ),
+                    (
+                        "FONTNAME",
+                        (0, 0),
+                        (-1, 0),
+                        "Helvetica-Bold"
+                    ),
+                    (
+                        "ALIGN",
+                        (1, 1),
+                        (-1, -1),
+                        "RIGHT"
+                    ),
+                    (
+                        "GRID",
+                        (0, 0),
+                        (-1, -1),
+                        0.4,
+                        colors.HexColor(
+                            "#d7d7d7"
+                        )
+                    ),
+                    (
+                        "ROWBACKGROUNDS",
+                        (0, 1),
+                        (-1, -1),
+                        [
+                            colors.white,
+                            colors.HexColor(
+                                "#f4f4f4"
+                            )
+                        ]
+                    ),
+                    (
+                        "FONTSIZE",
+                        (0, 0),
+                        (-1, -1),
+                        8
+                    ),
+                    (
+                        "TOPPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        5
+                    ),
+                    (
+                        "BOTTOMPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        5
+                    )
+                ]
+            )
+        )
+
+        story.append(
+            area_table
         )
 
     story.append(
@@ -4470,17 +4662,17 @@ def show_rd_referral_page():
 
 
         # --------------------------------------------------
-        # CLIENT LOCATION MAP
+        # CLIENT DISTRIBUTION BY POSTCODE AREA
         # --------------------------------------------------
 
         st.markdown(
-            "#### Client Locations"
+            "#### Client Distribution"
         )
 
         try:
 
             with st.spinner(
-                "Mapping client registered postcodes..."
+                "Building postcode area map..."
             ):
 
                 map_clients = get_rd_accountant_clients(
@@ -4488,12 +4680,12 @@ def show_rd_referral_page():
                     "All"
                 )
 
-                map_data = get_accountant_map_data(
+                area_counts = build_postcode_area_counts(
                     map_clients
                 )
 
-                map_figure = create_uk_client_map_figure(
-                    map_data,
+                map_figure = create_postcode_area_map_figure(
+                    area_counts,
                     selected_accountant
                 )
 
@@ -4501,20 +4693,12 @@ def show_rd_referral_page():
                     map_figure
                 )
 
-            total_unique_postcodes = len(
-                {
-                    normalise_postcode(value)
-                    for value in map_clients[
-                        "Postcode"
-                    ].tolist()
-                    if normalise_postcode(
-                        value
-                    )
-                }
-            )
+            mapped_clients = int(
+                area_counts["Clients"].sum()
+            ) if len(area_counts) > 0 else 0
 
-            mapped_unique_postcodes = len(
-                map_data
+            mapped_areas = len(
+                area_counts
             )
 
             map_col, stats_col = st.columns(
@@ -4536,30 +4720,72 @@ def show_rd_referral_page():
                 )
 
                 st.metric(
-                    "UNIQUE POSTCODES",
-                    f"{total_unique_postcodes:,}"
+                    "MAPPED CLIENTS",
+                    f"{mapped_clients:,}"
                 )
 
                 st.metric(
-                    "MAPPED",
-                    f"{mapped_unique_postcodes:,}"
+                    "POSTCODE AREAS",
+                    f"{mapped_areas:,}"
                 )
 
-                if total_unique_postcodes > 0:
+                if len(map_clients) > 0:
 
-                    map_rate = (
-                        mapped_unique_postcodes
-                        / total_unique_postcodes
+                    coverage = (
+                        mapped_clients
+                        / len(map_clients)
                     ) * 100
 
                     st.metric(
                         "MAP COVERAGE",
-                        f"{map_rate:.1f}%"
+                        f"{coverage:.1f}%"
                     )
 
             plt.close(
                 map_figure
             )
+
+            if len(area_counts) > 0:
+
+                st.markdown(
+                    "##### Top Postcode Areas"
+                )
+
+                top_areas = (
+                    area_counts
+                    .sort_values(
+                        "Clients",
+                        ascending=False
+                    )
+                    .head(10)
+                    .copy()
+                )
+
+                top_areas[
+                    "% of Clients"
+                ] = (
+                    top_areas["Clients"]
+                    / max(
+                        mapped_clients,
+                        1
+                    )
+                    * 100
+                ).round(1)
+
+                top_areas[
+                    "% of Clients"
+                ] = top_areas[
+                    "% of Clients"
+                ].map(
+                    lambda value:
+                    f"{value:.1f}%"
+                )
+
+                st.dataframe(
+                    top_areas,
+                    use_container_width=True,
+                    hide_index=True
+                )
 
             # ----------------------------------------------
             # BRANDED PDF REPORT
@@ -4575,7 +4801,7 @@ def show_rd_referral_page():
                     top_clients,
                     map_clients,
                     map_png,
-                    mapped_unique_postcodes
+                    area_counts
                 )
 
             safe_accountant_name = re.sub(
@@ -4597,7 +4823,7 @@ def show_rd_referral_page():
         except Exception as map_error:
 
             st.warning(
-                "The accountant snapshot loaded, but the postcode map "
+                "The accountant snapshot loaded, but the postcode-area map "
                 "or PDF report could not be generated."
             )
 
