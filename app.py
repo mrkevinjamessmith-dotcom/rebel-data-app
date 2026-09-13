@@ -5,7 +5,9 @@ import math
 import time
 import io
 import re
+import json
 import requests
+from openai import OpenAI
 import matplotlib.pyplot as plt
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT
@@ -190,6 +192,700 @@ def get_connection():
                 raise
 
             time.sleep(10)
+
+
+# ==================================================
+# OPENAI / ASK REBEL
+# ==================================================
+
+def get_openai_client():
+    return OpenAI(
+        api_key=st.secrets["openai"]["api_key"]
+    )
+
+
+ASK_REBEL_DATASETS = {
+    "companies": {
+        "view": "dbo.vw_AskRebelCompanies",
+        "fields": {
+            "CompanyNumber": "CompanyNumber",
+            "CompanyName": "CompanyName",
+            "PostTown": "PostTown",
+            "County": "County",
+            "PostCode": "PostCode",
+            "CompanyCategory": "CompanyCategory",
+            "CompanyStatus": "CompanyStatus",
+            "CountryOfOrigin": "CountryOfOrigin",
+            "IncorporationDate": "IncorporationDate",
+            "Employees": "Employees",
+            "AccountantName": "AccountantName",
+            "AuditorName": "AuditorName",
+            "AccountsNextDueDate": "AccountsNextDueDate",
+            "AccountsLastMadeUpDate": "AccountsLastMadeUpDate"
+        },
+        "virtual_fields": {"Location", "SIC"},
+        "default_columns": [
+            "CompanyNumber",
+            "CompanyName",
+            "PostTown",
+            "County",
+            "PostCode",
+            "CompanyStatus",
+            "Employees",
+            "SIC1",
+            "AccountantName",
+            "AuditorName"
+        ]
+    },
+    "prospects": {
+        "view": "dbo.vw_AskRebelProspects",
+        "fields": {
+            "CompanyNumber": "CompanyNumber",
+            "CompanyName": "CompanyName",
+            "CompanyStatus": "CompanyStatus",
+            "PostTown": "PostTown",
+            "County": "County",
+            "PostCode": "PostCode",
+            "BestSICCode": "BestSICCode",
+            "BestSICDescription": "BestSICDescription",
+            "BestRDCategory": "BestRDCategory",
+            "LatestEmployees": "LatestEmployees",
+            "EmployeeGrowthPct": "EmployeeGrowthPct",
+            "LatestTurnover": "LatestTurnover",
+            "TurnoverGrowthPct": "TurnoverGrowthPct",
+            "LatestProfitBeforeTax": "LatestProfitBeforeTax",
+            "LatestCash": "LatestCash",
+            "LatestAccountantName": "LatestAccountantName",
+            "LatestAuditorName": "LatestAuditorName",
+            "IndustryScore": "IndustryScore",
+            "GrowthScore": "GrowthScore",
+            "FinancialScore": "FinancialScore",
+            "CompanySignalScore": "CompanySignalScore",
+            "RDOpportunityScore": "RDOpportunityScore",
+            "RDOpportunityBand": "RDOpportunityBand",
+            "EstimatedNextAccountsDueDate": "EstimatedNextAccountsDueDate",
+            "DaysUntilEstimatedAccountsDue": "DaysUntilEstimatedAccountsDue",
+            "SalesTimingScore": "SalesTimingScore",
+            "SalesTimingBand": "SalesTimingBand"
+        },
+        "virtual_fields": {"Location", "Industry"},
+        "default_columns": [
+            "CompanyNumber",
+            "CompanyName",
+            "PostTown",
+            "County",
+            "BestSICDescription",
+            "LatestEmployees",
+            "LatestTurnover",
+            "RDOpportunityScore",
+            "RDOpportunityBand",
+            "SalesTimingScore",
+            "SalesTimingBand",
+            "LatestAccountantName"
+        ]
+    },
+    "accountants": {
+        "view": "dbo.vw_AskRebelAccountants",
+        "fields": {
+            "AccountantName": "AccountantName",
+            "TotalClients": "TotalClients",
+            "VeryHighRDClients": "VeryHighRDClients",
+            "HighRDClients": "HighRDClients",
+            "MediumRDClients": "MediumRDClients",
+            "LowRDClients": "LowRDClients",
+            "RDRelevantClients": "RDRelevantClients",
+            "ContactNowClients": "ContactNowClients",
+            "ContactSoonClients": "ContactSoonClients",
+            "NurtureClients": "NurtureClients",
+            "LaterClients": "LaterClients",
+            "AvgRDOpportunityScore": "AvgRDOpportunityScore",
+            "MaxRDOpportunityScore": "MaxRDOpportunityScore",
+            "AvgSalesTimingScore": "AvgSalesTimingScore",
+            "ReferralOpportunityScore": "ReferralOpportunityScore",
+            "ReferralOpportunityBand": "ReferralOpportunityBand",
+            "SalesTimingBand": "SalesTimingBand",
+            "RDServiceStatus": "RDServiceStatus"
+        },
+        "virtual_fields": set(),
+        "default_columns": [
+            "AccountantName",
+            "TotalClients",
+            "VeryHighRDClients",
+            "HighRDClients",
+            "RDRelevantClients",
+            "ContactNowClients",
+            "ContactSoonClients",
+            "ReferralOpportunityScore",
+            "ReferralOpportunityBand",
+            "SalesTimingBand"
+        ]
+    }
+}
+
+
+def ask_rebel_plan(question):
+    """
+    Convert a natural-language question into a restricted query plan.
+    The model does not write or execute SQL.
+    """
+
+    client = get_openai_client()
+
+    system_prompt = """
+You translate questions about Rebel Data into a JSON query plan.
+
+Return JSON only. Do not return markdown and do not return SQL.
+
+Available datasets:
+
+1. companies
+Use for general UK company searches and counts.
+Fields:
+CompanyNumber, CompanyName, PostTown, County, PostCode,
+CompanyCategory, CompanyStatus, CountryOfOrigin, IncorporationDate,
+Employees, AccountantName, AuditorName,
+AccountsNextDueDate, AccountsLastMadeUpDate.
+Virtual fields:
+Location = search PostTown, County and PostCode together.
+SIC = search SIC1, SIC2, SIC3 and SIC4 together.
+
+2. prospects
+Use when the question is specifically about Rebel R&D opportunity,
+R&D scoring, sales timing, growth, turnover, cash, profit or scored prospects.
+Fields:
+CompanyNumber, CompanyName, CompanyStatus, PostTown, County, PostCode,
+BestSICCode, BestSICDescription, BestRDCategory, LatestEmployees,
+EmployeeGrowthPct, LatestTurnover, TurnoverGrowthPct,
+LatestProfitBeforeTax, LatestCash, LatestAccountantName,
+LatestAuditorName, IndustryScore, GrowthScore, FinancialScore,
+CompanySignalScore, RDOpportunityScore, RDOpportunityBand,
+EstimatedNextAccountsDueDate, DaysUntilEstimatedAccountsDue,
+SalesTimingScore, SalesTimingBand.
+Virtual fields:
+Location = search PostTown, County and PostCode together.
+Industry = search BestSICDescription.
+
+3. accountants
+Use for questions comparing or finding accountancy firms based on
+their Rebel referral opportunity and R&D client profile.
+Fields:
+AccountantName, TotalClients, VeryHighRDClients, HighRDClients,
+MediumRDClients, LowRDClients, RDRelevantClients, ContactNowClients,
+ContactSoonClients, NurtureClients, LaterClients,
+AvgRDOpportunityScore, MaxRDOpportunityScore, AvgSalesTimingScore,
+ReferralOpportunityScore, ReferralOpportunityBand, SalesTimingBand,
+RDServiceStatus.
+
+JSON format:
+{
+  "dataset": "companies|prospects|accountants",
+  "operation": "list|count",
+  "filters": [
+    {
+      "field": "allowed field name",
+      "operator": "eq|contains|gte|lte|gt|lt|in",
+      "value": "value or array"
+    }
+  ],
+  "sort": [
+    {
+      "field": "allowed real field name",
+      "direction": "asc|desc"
+    }
+  ],
+  "limit": 50,
+  "interpretation": "short plain English description of how you interpreted the question"
+}
+
+Rules:
+- Use count when the user asks how many, number of, count or total companies/firms.
+- Otherwise use list.
+- Maximum limit is 100.
+- Use contains for partial company names, locations, industries, SIC text,
+  accountant names or auditor names unless the user clearly asks for an exact value.
+- CompanyStatus values are usually Active or Dissolved.
+- For phrases such as "20+ employees", use gte 20.
+- For "more than 20", use gt 20.
+- For "under £2m turnover", use lt 2000000.
+- "High R&D opportunity" means RDOpportunityBand = "High".
+- "Very High R&D opportunity" means RDOpportunityBand = "Very High".
+- "Contact Now" is SalesTimingBand = "Contact Now".
+- Do not invent fields.
+- Do not create SQL.
+"""
+
+    response = client.responses.create(
+        model="gpt-5.6-luna",
+        instructions=system_prompt,
+        input=question
+    )
+
+    raw = response.output_text.strip()
+
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+        raw = re.sub(r"\s*```$", "", raw)
+
+    return json.loads(raw)
+
+
+def _add_ask_rebel_filter(dataset, field, operator, value, where_parts, params):
+    """
+    Add one validated filter to the SQL being constructed locally.
+    Only allow-listed fields and operators can reach the database.
+    """
+
+    config = ASK_REBEL_DATASETS[dataset]
+    real_fields = config["fields"]
+    virtual_fields = config["virtual_fields"]
+
+    if field not in real_fields and field not in virtual_fields:
+        raise ValueError(f"Field '{field}' is not allowed for {dataset}.")
+
+    allowed_operators = {"eq", "contains", "gte", "lte", "gt", "lt", "in"}
+
+    if operator not in allowed_operators:
+        raise ValueError(f"Operator '{operator}' is not allowed.")
+
+    # Virtual search fields.
+    if dataset == "companies" and field == "Location":
+        if operator not in {"contains", "eq"}:
+            raise ValueError("Location supports contains or eq.")
+        if operator == "contains":
+            search_value = f"%{value}%"
+            where_parts.append(
+                "(PostTown LIKE %s OR County LIKE %s OR PostCode LIKE %s)"
+            )
+            params.extend([search_value, search_value, search_value])
+        else:
+            where_parts.append(
+                "(PostTown = %s OR County = %s OR PostCode = %s)"
+            )
+            params.extend([value, value, value])
+        return
+
+    if dataset == "companies" and field == "SIC":
+        if operator not in {"contains", "eq"}:
+            raise ValueError("SIC supports contains or eq.")
+        if operator == "contains":
+            search_value = f"%{value}%"
+            where_parts.append(
+                "(SIC1 LIKE %s OR SIC2 LIKE %s OR SIC3 LIKE %s OR SIC4 LIKE %s)"
+            )
+            params.extend(
+                [search_value, search_value, search_value, search_value]
+            )
+        else:
+            where_parts.append(
+                "(SIC1 = %s OR SIC2 = %s OR SIC3 = %s OR SIC4 = %s)"
+            )
+            params.extend([value, value, value, value])
+        return
+
+    if dataset == "prospects" and field == "Location":
+        if operator not in {"contains", "eq"}:
+            raise ValueError("Location supports contains or eq.")
+        if operator == "contains":
+            search_value = f"%{value}%"
+            where_parts.append(
+                "(PostTown LIKE %s OR County LIKE %s OR PostCode LIKE %s)"
+            )
+            params.extend([search_value, search_value, search_value])
+        else:
+            where_parts.append(
+                "(PostTown = %s OR County = %s OR PostCode = %s)"
+            )
+            params.extend([value, value, value])
+        return
+
+    if dataset == "prospects" and field == "Industry":
+        if operator not in {"contains", "eq"}:
+            raise ValueError("Industry supports contains or eq.")
+        if operator == "contains":
+            where_parts.append("BestSICDescription LIKE %s")
+            params.append(f"%{value}%")
+        else:
+            where_parts.append("BestSICDescription = %s")
+            params.append(value)
+        return
+
+    column = real_fields[field]
+
+    if operator == "eq":
+        where_parts.append(f"{column} = %s")
+        params.append(value)
+
+    elif operator == "contains":
+        where_parts.append(f"{column} LIKE %s")
+        params.append(f"%{value}%")
+
+    elif operator == "gte":
+        where_parts.append(f"{column} >= %s")
+        params.append(value)
+
+    elif operator == "lte":
+        where_parts.append(f"{column} <= %s")
+        params.append(value)
+
+    elif operator == "gt":
+        where_parts.append(f"{column} > %s")
+        params.append(value)
+
+    elif operator == "lt":
+        where_parts.append(f"{column} < %s")
+        params.append(value)
+
+    elif operator == "in":
+        if not isinstance(value, list) or len(value) == 0:
+            raise ValueError("IN filters require a non-empty array.")
+        if len(value) > 25:
+            raise ValueError("Too many values supplied to an IN filter.")
+
+        placeholders = ", ".join(["%s"] * len(value))
+        where_parts.append(f"{column} IN ({placeholders})")
+        params.extend(value)
+
+
+def build_ask_rebel_query(plan):
+    """
+    Build SQL from a validated structured plan.
+    The LLM never supplies SQL, table names or column expressions.
+    """
+
+    dataset = plan.get("dataset")
+
+    if dataset not in ASK_REBEL_DATASETS:
+        raise ValueError("Ask Rebel selected an unknown dataset.")
+
+    config = ASK_REBEL_DATASETS[dataset]
+
+    operation = plan.get("operation", "list")
+
+    if operation not in {"list", "count"}:
+        raise ValueError("Ask Rebel selected an invalid operation.")
+
+    where_parts = []
+    params = []
+
+    filters = plan.get("filters") or []
+
+    if len(filters) > 12:
+        raise ValueError("Too many filters were generated.")
+
+    for item in filters:
+        _add_ask_rebel_filter(
+            dataset=dataset,
+            field=item.get("field"),
+            operator=item.get("operator"),
+            value=item.get("value"),
+            where_parts=where_parts,
+            params=params
+        )
+
+    where_sql = ""
+
+    if where_parts:
+        where_sql = " WHERE " + " AND ".join(where_parts)
+
+    if operation == "count":
+        sql = (
+            f"SELECT COUNT_BIG(*) AS ResultCount "
+            f"FROM {config['view']}"
+            f"{where_sql}"
+        )
+        return sql, params
+
+    try:
+        limit = int(plan.get("limit", 50))
+    except (TypeError, ValueError):
+        limit = 50
+
+    limit = max(1, min(limit, 100))
+
+    select_columns = ", ".join(config["default_columns"])
+
+    sql = (
+        f"SELECT TOP {limit} {select_columns} "
+        f"FROM {config['view']}"
+        f"{where_sql}"
+    )
+
+    order_parts = []
+
+    for item in (plan.get("sort") or [])[:3]:
+        field = item.get("field")
+        direction = str(item.get("direction", "asc")).lower()
+
+        if field not in config["fields"]:
+            continue
+
+        if direction not in {"asc", "desc"}:
+            direction = "asc"
+
+        order_parts.append(
+            f"{config['fields'][field]} {direction.upper()}"
+        )
+
+    if order_parts:
+        sql += " ORDER BY " + ", ".join(order_parts)
+
+    else:
+        if dataset in {"companies", "prospects"}:
+            sql += " ORDER BY CompanyName, CompanyNumber"
+        else:
+            sql += " ORDER BY ReferralOpportunityScore DESC, AccountantName"
+
+    return sql, params
+
+
+def run_ask_rebel_query(plan):
+    sql, params = build_ask_rebel_query(plan)
+
+    conn = get_connection()
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute(sql, tuple(params))
+
+        rows = cursor.fetchall()
+
+        columns = [
+            column[0]
+            for column in cursor.description
+        ]
+
+        results = pd.DataFrame(
+            rows,
+            columns=columns
+        )
+
+        cursor.close()
+
+    finally:
+        conn.close()
+
+    return results, sql
+
+
+def show_ask_rebel_page():
+
+    st.markdown(
+        """
+        <div class="hero-title">
+            Ask Rebel
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.markdown(
+        """
+        <div class="hero-subtitle">
+            Ask questions about UK companies, R&D prospects and accountant opportunities in plain English.
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.markdown(
+        """
+        <div style="
+            background:#333335;
+            border-left:4px solid #8bd02f;
+            padding:14px 18px;
+            border-radius:6px;
+            color:#d9d9d9;
+            margin-bottom:22px;
+            line-height:1.6;
+        ">
+            Try: <b style="color:white;">How many active companies are there in Gloucestershire?</b><br>
+            Or: <b style="color:white;">Show high R&amp;D opportunity companies with turnover above £2m.</b><br>
+            Or: <b style="color:white;">Which accountants have the most Very High R&amp;D clients?</b>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    with st.form("ask_rebel_form"):
+
+        question = st.text_area(
+            "Ask Rebel a question",
+            placeholder="e.g. Find active manufacturing companies in Gloucestershire with more than 20 employees",
+            height=110
+        )
+
+        ask_clicked = st.form_submit_button(
+            "ASK REBEL"
+        )
+
+    if not ask_clicked:
+        return
+
+    question = (question or "").strip()
+
+    if not question:
+        st.warning(
+            "Enter a question for Ask Rebel."
+        )
+        return
+
+    try:
+
+        with st.spinner(
+            "Ask Rebel is interpreting your question..."
+        ):
+
+            plan = ask_rebel_plan(
+                question
+            )
+
+            results, generated_sql = run_ask_rebel_query(
+                plan
+            )
+
+        st.session_state["ask_rebel_question"] = question
+        st.session_state["ask_rebel_plan"] = plan
+        st.session_state["ask_rebel_results"] = results
+
+        log_activity(
+            "ASK_REBEL",
+            result_count=(
+                int(results.iloc[0, 0])
+                if plan.get("operation") == "count"
+                and len(results) > 0
+                else len(results)
+            )
+        )
+
+        st.markdown(
+            "<hr>",
+            unsafe_allow_html=True
+        )
+
+        st.markdown(
+            """
+            <div class="section-title">
+                Rebel Answer
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        if plan.get("operation") == "count":
+
+            count_value = (
+                int(results.iloc[0, 0])
+                if len(results) > 0
+                else 0
+            )
+
+            st.metric(
+                "RESULT",
+                f"{count_value:,}"
+            )
+
+        else:
+
+            st.write(
+                f"Ask Rebel returned **{len(results):,}** matching records."
+            )
+
+            if len(results) > 0:
+
+                st.dataframe(
+                    results,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=500
+                )
+
+                csv = (
+                    results
+                    .to_csv(index=False)
+                    .encode("utf-8")
+                )
+
+                st.download_button(
+                    "DOWNLOAD RESULTS CSV",
+                    data=csv,
+                    file_name="ask_rebel_results.csv",
+                    mime="text/csv",
+                    key="ask_rebel_download"
+                )
+
+            else:
+
+                st.info(
+                    "No records matched the question as interpreted."
+                )
+
+        interpretation = plan.get(
+            "interpretation",
+            "No interpretation was supplied."
+        )
+
+        st.markdown(
+            "### How Rebel interpreted your question"
+        )
+
+        st.write(
+            interpretation
+        )
+
+        with st.expander(
+            "Technical details"
+        ):
+
+            st.write(
+                f"**Dataset:** {plan.get('dataset')}"
+            )
+
+            st.write(
+                f"**Operation:** {plan.get('operation')}"
+            )
+
+            if plan.get("filters"):
+                st.write(
+                    "**Filters:**"
+                )
+
+                for item in plan["filters"]:
+                    st.write(
+                        f"- {item.get('field')} "
+                        f"{item.get('operator')} "
+                        f"{item.get('value')}"
+                    )
+
+            if plan.get("sort"):
+                st.write(
+                    "**Sort:**"
+                )
+
+                for item in plan["sort"]:
+                    st.write(
+                        f"- {item.get('field')} "
+                        f"{item.get('direction')}"
+                    )
+
+            st.code(
+                generated_sql,
+                language="sql"
+            )
+
+    except json.JSONDecodeError:
+
+        st.error(
+            "Ask Rebel could not interpret the question into a valid query plan. "
+            "Try wording the question a little more simply."
+        )
+
+    except Exception as e:
+
+        st.error(
+            "Ask Rebel could not complete the request."
+        )
+
+        st.exception(e)
 
 
 
@@ -5259,7 +5955,10 @@ additional_defaults = {
     "rd_result_count": 0,
     "rd_page_number": 1,
     "last_viewed_accountant": None,
-    "last_viewed_rd_company": None
+    "last_viewed_rd_company": None,
+    "ask_rebel_question": None,
+    "ask_rebel_plan": None,
+    "ask_rebel_results": None
 }
 
 for key, value in additional_defaults.items():
@@ -5285,7 +5984,8 @@ st.markdown(
     """
     <style>
     div[data-testid="stHorizontalBlock"] > div:has(button[key="nav_company_search"]),
-    div[data-testid="stHorizontalBlock"] > div:has(button[key="nav_rd_referrals"]) {
+    div[data-testid="stHorizontalBlock"] > div:has(button[key="nav_rd_referrals"]),
+    div[data-testid="stHorizontalBlock"] > div:has(button[key="nav_ask_rebel"]) {
         gap: 0.5rem;
     }
 
@@ -5297,7 +5997,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-nav1, nav2, nav_spacer = st.columns([1.2, 1.5, 5])
+nav1, nav2, nav3, nav_spacer = st.columns([1.2, 1.5, 1.0, 4])
 
 with nav1:
     company_active = (
@@ -5327,12 +6027,28 @@ with nav2:
         st.session_state["active_page"] = "R&D Referral Partners"
         st.rerun()
 
+with nav3:
+    ask_rebel_active = (
+        st.session_state["active_page"] == "Ask Rebel"
+    )
+
+    if st.button(
+        "ASK REBEL",
+        key="nav_ask_rebel",
+        use_container_width=True,
+        type="primary" if ask_rebel_active else "secondary"
+    ):
+        st.session_state["active_page"] = "Ask Rebel"
+        st.rerun()
+
 st.markdown("<hr>", unsafe_allow_html=True)
 
 if st.session_state["active_page"] == "Company Search":
     show_company_search_page()
-else:
+elif st.session_state["active_page"] == "R&D Referral Partners":
     show_rd_referral_page()
+else:
+    show_ask_rebel_page()
 
 
 # ==================================================
