@@ -667,6 +667,456 @@ def run_ask_rebel_query(plan):
     return results, sql
 
 
+
+def create_company_report_pdf(detail, accounts_comparison=None):
+    """Create a simple branded company report PDF in memory."""
+
+    buffer = io.BytesIO()
+
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=16 * mm,
+        leftMargin=16 * mm,
+        topMargin=16 * mm,
+        bottomMargin=16 * mm
+    )
+
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        "RebelTitle",
+        parent=styles["Title"],
+        fontSize=20,
+        leading=24,
+        textColor=colors.HexColor("#222222"),
+        spaceAfter=4
+    )
+
+    subtitle_style = ParagraphStyle(
+        "RebelSubtitle",
+        parent=styles["Normal"],
+        fontSize=10,
+        leading=14,
+        textColor=colors.HexColor("#65a816"),
+        spaceAfter=12
+    )
+
+    heading_style = ParagraphStyle(
+        "RebelHeading",
+        parent=styles["Heading2"],
+        fontSize=12,
+        leading=15,
+        textColor=colors.HexColor("#222222"),
+        spaceBefore=8,
+        spaceAfter=6
+    )
+
+    normal_style = ParagraphStyle(
+        "RebelNormal",
+        parent=styles["BodyText"],
+        fontSize=9,
+        leading=12,
+        textColor=colors.HexColor("#333333")
+    )
+
+    story = []
+
+    story.append(
+        Paragraph(
+            f"Rebel Data - {display_value(detail.get('CompanyName'))}",
+            title_style
+        )
+    )
+
+    story.append(
+        Paragraph(
+            f"Company Number: {display_value(detail.get('CompanyNumber'))}",
+            subtitle_style
+        )
+    )
+
+    def add_table(title, rows):
+        story.append(Paragraph(title, heading_style))
+
+        table_data = [
+            [
+                Paragraph("<b>Field</b>", normal_style),
+                Paragraph("<b>Value</b>", normal_style)
+            ]
+        ]
+
+        for label, value in rows:
+            table_data.append(
+                [
+                    Paragraph(str(label), normal_style),
+                    Paragraph(str(display_value(value)), normal_style)
+                ]
+            )
+
+        table = Table(
+            table_data,
+            colWidths=[58 * mm, 112 * mm],
+            repeatRows=1
+        )
+
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#8bd02f")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#222222")),
+                    ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#cccccc")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ]
+            )
+        )
+
+        story.append(table)
+        story.append(Spacer(1, 5 * mm))
+
+    address_parts = [
+        detail.get("POBox"),
+        detail.get("AddressLine1"),
+        detail.get("AddressLine2"),
+        detail.get("PostTown"),
+        detail.get("County"),
+        detail.get("Country"),
+        detail.get("PostCode")
+    ]
+
+    address = ", ".join(
+        str(x).strip()
+        for x in address_parts
+        if x is not None and str(x).strip()
+    ) or "Not available"
+
+    add_table(
+        "Company",
+        [
+            ("Status", detail.get("CompanyStatus")),
+            ("Employees", detail.get("Employees")),
+            ("Category", detail.get("CompanyCategory")),
+            ("Country of Origin", detail.get("CountryOfOrigin")),
+            ("Incorporation Date", detail.get("IncorporationDate")),
+            ("Registered Address", address),
+        ]
+    )
+
+    sic_values = [
+        detail.get("SIC1"),
+        detail.get("SIC2"),
+        detail.get("SIC3"),
+        detail.get("SIC4")
+    ]
+
+    sic_text = "<br/>".join(
+        str(x)
+        for x in sic_values
+        if x is not None and str(x).strip()
+    ) or "Not available"
+
+    add_table(
+        "Industry and Advisers",
+        [
+            ("SIC", sic_text),
+            ("Accountant", detail.get("AccountantName")),
+            ("Auditor", detail.get("AuditorName")),
+        ]
+    )
+
+    add_table(
+        "Accounts",
+        [
+            ("Accounts Category", detail.get("AccountsCategory")),
+            ("Accounts Last Made Up", detail.get("AccountsLastMadeUpDate")),
+            ("Next Accounts Due", detail.get("AccountsNextDueDate")),
+            ("Confirmation Statement Last Made Up", detail.get("ConfStmtLastMadeUpDate")),
+            ("Confirmation Statement Next Due", detail.get("ConfStmtNextDueDate")),
+        ]
+    )
+
+    add_table(
+        "Mortgages",
+        [
+            ("Charges", detail.get("MortgagesNumCharges")),
+            ("Outstanding", detail.get("MortgagesOutstanding")),
+            ("Part Satisfied", detail.get("MortgagesPartSatisfied")),
+            ("Satisfied", detail.get("MortgagesSatisfied")),
+        ]
+    )
+
+    if accounts_comparison:
+        financial_rows = [
+            ("Latest Accounts Period End", accounts_comparison.get("LatestAccountsPeriodEnd")),
+            ("Previous Accounts Period End", accounts_comparison.get("PreviousAccountsPeriodEnd")),
+            ("Latest Employees", accounts_comparison.get("LatestEmployees")),
+            ("Previous Employees", accounts_comparison.get("PreviousEmployees")),
+            ("Latest Turnover", format_financial_value(accounts_comparison.get("LatestTurnover"))),
+            ("Previous Turnover", format_financial_value(accounts_comparison.get("PreviousTurnover"))),
+            ("Latest Profit Before Tax", format_financial_value(accounts_comparison.get("LatestProfitBeforeTax"))),
+            ("Previous Profit Before Tax", format_financial_value(accounts_comparison.get("PreviousProfitBeforeTax"))),
+            ("Latest Cash", format_financial_value(accounts_comparison.get("LatestCash"))),
+            ("Previous Cash", format_financial_value(accounts_comparison.get("PreviousCash"))),
+            ("Latest Net Assets", format_financial_value(accounts_comparison.get("LatestNetAssets"))),
+            ("Previous Net Assets", format_financial_value(accounts_comparison.get("PreviousNetAssets"))),
+            ("Latest Accountant", accounts_comparison.get("LatestAccountantName")),
+            ("Previous Accountant", accounts_comparison.get("PreviousAccountantName")),
+            ("Latest Auditor", accounts_comparison.get("LatestAuditorName")),
+            ("Previous Auditor", accounts_comparison.get("PreviousAuditorName")),
+        ]
+
+        add_table(
+            "Financial Comparison",
+            financial_rows
+        )
+
+    story.append(
+        Paragraph(
+            "Source: Rebel Data business intelligence platform.",
+            normal_style
+        )
+    )
+
+    doc.build(story)
+
+    buffer.seek(0)
+
+    return buffer.getvalue()
+
+
+def show_ask_rebel_company_detail(selected_number):
+    """Show the same core company intelligence used in Company Search."""
+
+    if (
+        st.session_state.get("last_viewed_company")
+        != selected_number
+    ):
+        log_activity(
+            "COMPANY_VIEW",
+            company_viewed=selected_number
+        )
+
+        st.session_state["last_viewed_company"] = selected_number
+
+    with st.spinner("Loading company details..."):
+        detail = get_company_detail(selected_number)
+
+    if not detail:
+        st.warning("No company detail was found for this company.")
+        return
+
+    st.markdown("<hr>", unsafe_allow_html=True)
+
+    st.markdown(
+        f"""
+        <div class="detail-title">
+            {display_value(detail["CompanyName"])}
+        </div>
+
+        <div class="detail-subtitle">
+            Company Number:
+            {display_value(detail["CompanyNumber"])}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.subheader("Company")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    col1.metric(
+        "Status",
+        display_value(detail["CompanyStatus"])
+    )
+
+    col2.metric(
+        "Employees",
+        display_value(detail["Employees"])
+    )
+
+    col3.metric(
+        "Category",
+        display_value(detail["CompanyCategory"])
+    )
+
+    col4.metric(
+        "Country of Origin",
+        display_value(detail["CountryOfOrigin"])
+    )
+
+    st.subheader("Important Dates")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.write("**Incorporated**")
+        st.write(display_value(detail["IncorporationDate"]))
+
+    with col2:
+        st.write("**Accounts Last Made Up**")
+        st.write(display_value(detail["AccountsLastMadeUpDate"]))
+
+    with col3:
+        st.write("**Confirmation Statement Last Made Up**")
+        st.write(display_value(detail["ConfStmtLastMadeUpDate"]))
+
+    st.subheader("Registered Address")
+
+    address_parts = [
+        detail["POBox"],
+        detail["AddressLine1"],
+        detail["AddressLine2"],
+        detail["PostTown"],
+        detail["County"],
+        detail["Country"],
+        detail["PostCode"]
+    ]
+
+    address_parts = [
+        str(x).strip()
+        for x in address_parts
+        if x is not None and str(x).strip() != ""
+    ]
+
+    st.write(
+        ", ".join(address_parts)
+        if address_parts
+        else "Not available"
+    )
+
+    st.subheader("Industry")
+
+    sic_values = [
+        detail["SIC1"],
+        detail["SIC2"],
+        detail["SIC3"],
+        detail["SIC4"]
+    ]
+
+    sic_values = [
+        str(x).strip()
+        for x in sic_values
+        if x is not None and str(x).strip() != ""
+    ]
+
+    if sic_values:
+        for sic_value in sic_values:
+            st.write(f"• {sic_value}")
+    else:
+        st.write("No SIC information available.")
+
+    st.subheader("Professional Advisers")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.write("**Accountant**")
+        st.write(display_value(detail["AccountantName"]))
+
+    with col2:
+        st.write("**Auditor**")
+        st.write(display_value(detail["AuditorName"]))
+
+    st.subheader("Accounts")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.write("**Accounts Category**")
+        st.write(display_value(detail["AccountsCategory"]))
+
+    with col2:
+        st.write("**Next Accounts Due**")
+        st.write(display_value(detail["AccountsNextDueDate"]))
+
+    with col3:
+        st.write("**Last Accounts**")
+        st.write(display_value(detail["AccountsLastMadeUpDate"]))
+
+    st.subheader("Mortgages")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    col1.metric(
+        "Charges",
+        display_value(detail["MortgagesNumCharges"])
+    )
+
+    col2.metric(
+        "Outstanding",
+        display_value(detail["MortgagesOutstanding"])
+    )
+
+    col3.metric(
+        "Part Satisfied",
+        display_value(detail["MortgagesPartSatisfied"])
+    )
+
+    col4.metric(
+        "Satisfied",
+        display_value(detail["MortgagesSatisfied"])
+    )
+
+    accounts_comparison = None
+
+    try:
+        with st.spinner("Loading financial comparison..."):
+            accounts_comparison = get_accounts_comparison(selected_number)
+
+        if accounts_comparison:
+            show_accounts_comparison(accounts_comparison)
+        else:
+            st.markdown("<hr>", unsafe_allow_html=True)
+            st.markdown(
+                '<div class="section-title">Financial Comparison</div>',
+                unsafe_allow_html=True
+            )
+            st.info(
+                "No accounts comparison is currently available for this company."
+            )
+
+    except Exception as comparison_error:
+        st.markdown("<hr>", unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-title">Financial Comparison</div>',
+            unsafe_allow_html=True
+        )
+        st.warning(
+            "The company details loaded, but the financial comparison "
+            "could not be retrieved."
+        )
+        st.exception(comparison_error)
+
+    try:
+        pdf_bytes = create_company_report_pdf(
+            detail,
+            accounts_comparison
+        )
+
+        safe_company_name = re.sub(
+            r"[^A-Za-z0-9_-]+",
+            "_",
+            str(detail.get("CompanyName") or selected_number)
+        ).strip("_")
+
+        st.download_button(
+            label="DOWNLOAD COMPANY REPORT PDF",
+            data=pdf_bytes,
+            file_name=f"Rebel_Data_{safe_company_name}_{selected_number}.pdf",
+            mime="application/pdf",
+            key=f"ask_rebel_company_pdf_{selected_number}"
+        )
+
+    except Exception as pdf_error:
+        st.warning("The company report PDF could not be generated.")
+        st.exception(pdf_error)
+
+
 def show_ask_rebel_page():
 
     st.markdown(
@@ -730,6 +1180,7 @@ def show_ask_rebel_page():
 
         question = st.text_area(
             "Ask Rebel a question",
+            value=st.session_state.get("ask_rebel_question") or "",
             placeholder="e.g. Find active manufacturing companies in Gloucestershire with more than 20 employees",
             height=110
         )
@@ -738,174 +1189,225 @@ def show_ask_rebel_page():
             "ASK REBEL"
         )
 
-    if not ask_clicked:
+    if ask_clicked:
+
+        question = (question or "").strip()
+
+        if not question:
+            st.warning("Enter a question for Ask Rebel.")
+        else:
+            try:
+
+                with st.spinner(
+                    "Ask Rebel is interpreting your question..."
+                ):
+
+                    plan = ask_rebel_plan(question)
+
+                    results, generated_sql = run_ask_rebel_query(plan)
+
+                st.session_state["ask_rebel_question"] = question
+                st.session_state["ask_rebel_plan"] = plan
+                st.session_state["ask_rebel_results"] = results
+                st.session_state["ask_rebel_generated_sql"] = generated_sql
+                st.session_state["ask_rebel_selected_company"] = None
+
+                log_activity(
+                    "ASK_REBEL",
+                    result_count=(
+                        int(results.iloc[0, 0])
+                        if plan.get("operation") == "count"
+                        and len(results) > 0
+                        else len(results)
+                    )
+                )
+
+            except json.JSONDecodeError:
+                st.error(
+                    "Ask Rebel could not interpret the question into a valid query plan. "
+                    "Try wording the question a little more simply."
+                )
+
+            except Exception as e:
+                st.error(
+                    "Ask Rebel could not complete the request."
+                )
+                st.exception(e)
+
+    plan = st.session_state.get("ask_rebel_plan")
+    results = st.session_state.get("ask_rebel_results")
+    generated_sql = st.session_state.get("ask_rebel_generated_sql")
+
+    if plan is None or results is None:
         return
 
-    question = (question or "").strip()
+    st.markdown("<hr>", unsafe_allow_html=True)
 
-    if not question:
-        st.warning(
-            "Enter a question for Ask Rebel."
-        )
-        return
+    st.markdown(
+        """
+        <div class="section-title">
+            Rebel Answer
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-    try:
+    if plan.get("operation") == "count":
 
-        with st.spinner(
-            "Ask Rebel is interpreting your question..."
-        ):
-
-            plan = ask_rebel_plan(
-                question
-            )
-
-            results, generated_sql = run_ask_rebel_query(
-                plan
-            )
-
-        st.session_state["ask_rebel_question"] = question
-        st.session_state["ask_rebel_plan"] = plan
-        st.session_state["ask_rebel_results"] = results
-
-        log_activity(
-            "ASK_REBEL",
-            result_count=(
-                int(results.iloc[0, 0])
-                if plan.get("operation") == "count"
-                and len(results) > 0
-                else len(results)
-            )
+        count_value = (
+            int(results.iloc[0, 0])
+            if len(results) > 0
+            else 0
         )
 
-        st.markdown(
-            "<hr>",
-            unsafe_allow_html=True
+        st.metric(
+            "RESULT",
+            f"{count_value:,}"
         )
 
-        st.markdown(
-            """
-            <div class="section-title">
-                Rebel Answer
-            </div>
-            """,
-            unsafe_allow_html=True
+    else:
+
+        st.write(
+            f"Ask Rebel returned **{len(results):,}** matching records."
         )
 
-        if plan.get("operation") == "count":
+        if len(results) > 0:
 
-            count_value = (
-                int(results.iloc[0, 0])
-                if len(results) > 0
-                else 0
+            st.dataframe(
+                results,
+                use_container_width=True,
+                hide_index=True,
+                height=500
             )
 
-            st.metric(
-                "RESULT",
-                f"{count_value:,}"
+            csv = (
+                results
+                .to_csv(index=False)
+                .encode("utf-8")
             )
+
+            st.download_button(
+                "DOWNLOAD RESULTS CSV",
+                data=csv,
+                file_name="ask_rebel_results.csv",
+                mime="text/csv",
+                key="ask_rebel_download"
+            )
+
+            dataset = plan.get("dataset")
+
+            if (
+                dataset in {"companies", "prospects"}
+                and "CompanyNumber" in results.columns
+                and "CompanyName" in results.columns
+            ):
+
+                st.markdown("<hr>", unsafe_allow_html=True)
+
+                st.markdown(
+                    """
+                    <div class="section-title">
+                        Company Details
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+                company_choices = {
+                    f"{row['CompanyName']} ({row['CompanyNumber']})":
+                    row["CompanyNumber"]
+                    for _, row in results.iterrows()
+                }
+
+                choice_labels = [
+                    "Select a company..."
+                ] + list(company_choices.keys())
+
+                selected_number_state = st.session_state.get(
+                    "ask_rebel_selected_company"
+                )
+
+                default_index = 0
+
+                if selected_number_state:
+                    for idx, label in enumerate(choice_labels):
+                        if (
+                            label != "Select a company..."
+                            and company_choices.get(label) == selected_number_state
+                        ):
+                            default_index = idx
+                            break
+
+                detail_choice = st.selectbox(
+                    "Select a company from the Ask Rebel results",
+                    choice_labels,
+                    index=default_index,
+                    key="ask_rebel_company_detail_choice"
+                )
+
+                if detail_choice != "Select a company...":
+
+                    selected_number = company_choices[detail_choice]
+
+                    st.session_state[
+                        "ask_rebel_selected_company"
+                    ] = selected_number
+
+                    try:
+                        show_ask_rebel_company_detail(selected_number)
+                    except Exception as e:
+                        st.error(
+                            "The company was selected, but the full company detail could not be loaded."
+                        )
+                        st.exception(e)
 
         else:
-
-            st.write(
-                f"Ask Rebel returned **{len(results):,}** matching records."
+            st.info(
+                "No records matched the question as interpreted."
             )
 
-            if len(results) > 0:
+    interpretation = plan.get(
+        "interpretation",
+        "No interpretation was supplied."
+    )
 
-                st.dataframe(
-                    results,
-                    use_container_width=True,
-                    hide_index=True,
-                    height=500
-                )
+    st.markdown("### How Rebel interpreted your question")
+    st.write(interpretation)
 
-                csv = (
-                    results
-                    .to_csv(index=False)
-                    .encode("utf-8")
-                )
+    with st.expander("Technical details"):
 
-                st.download_button(
-                    "DOWNLOAD RESULTS CSV",
-                    data=csv,
-                    file_name="ask_rebel_results.csv",
-                    mime="text/csv",
-                    key="ask_rebel_download"
-                )
-
-            else:
-
-                st.info(
-                    "No records matched the question as interpreted."
-                )
-
-        interpretation = plan.get(
-            "interpretation",
-            "No interpretation was supplied."
-        )
-
-        st.markdown(
-            "### How Rebel interpreted your question"
+        st.write(
+            f"**Dataset:** {plan.get('dataset')}"
         )
 
         st.write(
-            interpretation
+            f"**Operation:** {plan.get('operation')}"
         )
 
-        with st.expander(
-            "Technical details"
-        ):
+        if plan.get("filters"):
+            st.write("**Filters:**")
 
-            st.write(
-                f"**Dataset:** {plan.get('dataset')}"
-            )
-
-            st.write(
-                f"**Operation:** {plan.get('operation')}"
-            )
-
-            if plan.get("filters"):
+            for item in plan["filters"]:
                 st.write(
-                    "**Filters:**"
+                    f"- {item.get('field')} "
+                    f"{item.get('operator')} "
+                    f"{item.get('value')}"
                 )
 
-                for item in plan["filters"]:
-                    st.write(
-                        f"- {item.get('field')} "
-                        f"{item.get('operator')} "
-                        f"{item.get('value')}"
-                    )
+        if plan.get("sort"):
+            st.write("**Sort:**")
 
-            if plan.get("sort"):
+            for item in plan["sort"]:
                 st.write(
-                    "**Sort:**"
+                    f"- {item.get('field')} "
+                    f"{item.get('direction')}"
                 )
 
-                for item in plan["sort"]:
-                    st.write(
-                        f"- {item.get('field')} "
-                        f"{item.get('direction')}"
-                    )
-
+        if generated_sql:
             st.code(
                 generated_sql,
                 language="sql"
             )
-
-    except json.JSONDecodeError:
-
-        st.error(
-            "Ask Rebel could not interpret the question into a valid query plan. "
-            "Try wording the question a little more simply."
-        )
-
-    except Exception as e:
-
-        st.error(
-            "Ask Rebel could not complete the request."
-        )
-
-        st.exception(e)
 
 
 
@@ -5978,7 +6480,9 @@ additional_defaults = {
     "last_viewed_rd_company": None,
     "ask_rebel_question": None,
     "ask_rebel_plan": None,
-    "ask_rebel_results": None
+    "ask_rebel_results": None,
+    "ask_rebel_generated_sql": None,
+    "ask_rebel_selected_company": None
 }
 
 for key, value in additional_defaults.items():
