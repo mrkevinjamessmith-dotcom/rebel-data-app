@@ -927,6 +927,888 @@ def create_company_report_pdf(detail, accounts_comparison=None):
     return buffer.getvalue()
 
 
+
+# ==================================================
+# SIMILAR COMPANIES / MARKET PROFILE
+# ==================================================
+
+def get_employee_band_bounds(value):
+    """
+    Return a readable employee band plus its lower/upper bounds.
+    The bands mirror the broad SME groupings used elsewhere in Rebel.
+    """
+
+    try:
+        employees = int(value)
+    except (TypeError, ValueError):
+        return "Unknown", None, None
+
+    if employees <= 0:
+        return "Unknown", None, None
+    if employees <= 5:
+        return "1-5", 1, 5
+    if employees <= 10:
+        return "6-10", 6, 10
+    if employees <= 19:
+        return "11-19", 11, 19
+    if employees <= 49:
+        return "20-49", 20, 49
+    if employees <= 99:
+        return "50-99", 50, 99
+    if employees <= 249:
+        return "100-249", 100, 249
+    if employees <= 499:
+        return "250-499", 250, 499
+    if employees <= 999:
+        return "500-999", 500, 999
+
+    return "1,000+", 1000, None
+
+
+def get_primary_sic(detail):
+    for field in ("SIC1", "SIC2", "SIC3", "SIC4"):
+        value = detail.get(field)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
+def get_peer_market_profile(detail, peer_limit=25):
+    """
+    Find similar companies deterministically.
+
+    Similarity is based on:
+    - same SIC / industry
+    - employee band
+    - county
+    - company category
+
+    The LLM is not involved in the peer selection.
+    """
+
+    selected_number = str(detail.get("CompanyNumber") or "").strip()
+    selected_sic = get_primary_sic(detail)
+
+    if not selected_sic:
+        return pd.DataFrame(), {
+            "EmployeeBand": "Unknown",
+            "PrimarySIC": None,
+            "IndustryCompanies": 0,
+            "SameEmployeeBand": 0,
+            "SameCounty": 0,
+            "SameCountyBand": 0,
+            "AccountantIndustryClients": 0,
+            "AccountantPeerClients": 0,
+            "AccountantIndustryPenetrationPct": None,
+            "AccountantPeerPenetrationPct": None
+        }
+
+    selected_county = str(detail.get("County") or "").strip()
+    selected_category = str(detail.get("CompanyCategory") or "").strip()
+    selected_accountant = str(detail.get("AccountantName") or "").strip()
+
+    employee_band, emp_min, emp_max = get_employee_band_bounds(
+        detail.get("Employees")
+    )
+
+    same_sic_where = """
+        (
+            SIC1 = %s
+            OR SIC2 = %s
+            OR SIC3 = %s
+            OR SIC4 = %s
+        )
+    """
+
+    # Build a deterministic similarity score.
+    score_parts = [
+        "CASE WHEN SIC1 = %s THEN 50 ELSE 40 END"
+    ]
+    score_params = [selected_sic]
+
+    if emp_min is not None:
+        if emp_max is None:
+            emp_condition = "TRY_CONVERT(INT, Employees) >= %s"
+            emp_params = [emp_min]
+        else:
+            emp_condition = "TRY_CONVERT(INT, Employees) BETWEEN %s AND %s"
+            emp_params = [emp_min, emp_max]
+
+        score_parts.append(
+            f"CASE WHEN {emp_condition} THEN 25 ELSE 0 END"
+        )
+        score_params.extend(emp_params)
+
+    if selected_county:
+        score_parts.append(
+            "CASE WHEN County = %s THEN 15 ELSE 0 END"
+        )
+        score_params.append(selected_county)
+
+    if selected_category:
+        score_parts.append(
+            "CASE WHEN CompanyCategory = %s THEN 10 ELSE 0 END"
+        )
+        score_params.append(selected_category)
+
+    score_sql = " + ".join(score_parts)
+
+    peer_sql = f"""
+        SELECT TOP {int(peer_limit)}
+            CompanyNumber,
+            CompanyName,
+            PostTown,
+            County,
+            TRY_CONVERT(INT, Employees) AS Employees,
+            SIC1,
+            AccountantName,
+            AuditorName,
+            ({score_sql}) AS SimilarityScore
+        FROM dbo.vw_RebelCompanies
+        WHERE
+            CompanyNumber <> %s
+            AND CompanyStatus = 'Active'
+            AND {same_sic_where}
+        ORDER BY
+            SimilarityScore DESC,
+            TRY_CONVERT(INT, Employees) DESC,
+            CompanyName
+    """
+
+    peer_params = (
+        score_params
+        + [selected_number]
+        + [selected_sic] * 4
+    )
+
+    conn = get_connection()
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            peer_sql,
+            tuple(peer_params)
+        )
+
+        peer_rows = cursor.fetchall()
+        peer_columns = [
+            column[0]
+            for column in cursor.description
+        ]
+
+        peers = pd.DataFrame(
+            peer_rows,
+            columns=peer_columns
+        )
+
+        # Market profile in one scan of the matching industry.
+        band_condition = None
+        band_params = []
+
+        if emp_min is not None:
+            if emp_max is None:
+                band_condition = (
+                    "TRY_CONVERT(INT, Employees) >= %s"
+                )
+                band_params = [emp_min]
+            else:
+                band_condition = (
+                    "TRY_CONVERT(INT, Employees) BETWEEN %s AND %s"
+                )
+                band_params = [emp_min, emp_max]
+
+        select_parts = [
+            "COUNT_BIG(*) AS IndustryCompanies"
+        ]
+        market_params = []
+
+        if band_condition:
+            select_parts.append(
+                f"SUM(CASE WHEN {band_condition} THEN 1 ELSE 0 END) "
+                "AS SameEmployeeBand"
+            )
+            market_params.extend(band_params)
+        else:
+            select_parts.append(
+                "CAST(0 AS BIGINT) AS SameEmployeeBand"
+            )
+
+        if selected_county:
+            select_parts.append(
+                "SUM(CASE WHEN County = %s THEN 1 ELSE 0 END) "
+                "AS SameCounty"
+            )
+            market_params.append(selected_county)
+        else:
+            select_parts.append(
+                "CAST(0 AS BIGINT) AS SameCounty"
+            )
+
+        if selected_county and band_condition:
+            select_parts.append(
+                f"SUM(CASE WHEN County = %s AND {band_condition} "
+                "THEN 1 ELSE 0 END) AS SameCountyBand"
+            )
+            market_params.append(selected_county)
+            market_params.extend(band_params)
+        else:
+            select_parts.append(
+                "CAST(0 AS BIGINT) AS SameCountyBand"
+            )
+
+        if selected_accountant:
+            select_parts.append(
+                "SUM(CASE WHEN AccountantName = %s THEN 1 ELSE 0 END) "
+                "AS AccountantIndustryClients"
+            )
+            market_params.append(selected_accountant)
+        else:
+            select_parts.append(
+                "CAST(0 AS BIGINT) AS AccountantIndustryClients"
+            )
+
+        if selected_accountant and band_condition:
+            select_parts.append(
+                f"SUM(CASE WHEN AccountantName = %s AND {band_condition} "
+                "THEN 1 ELSE 0 END) AS AccountantPeerClients"
+            )
+            market_params.append(selected_accountant)
+            market_params.extend(band_params)
+        else:
+            select_parts.append(
+                "CAST(0 AS BIGINT) AS AccountantPeerClients"
+            )
+
+        market_sql = f"""
+            SELECT
+                {", ".join(select_parts)}
+            FROM dbo.vw_RebelCompanies
+            WHERE
+                CompanyStatus = 'Active'
+                AND {same_sic_where}
+        """
+
+        market_params.extend(
+            [selected_sic] * 4
+        )
+
+        cursor.execute(
+            market_sql,
+            tuple(market_params)
+        )
+
+        market_row = cursor.fetchone()
+        market_columns = [
+            column[0]
+            for column in cursor.description
+        ]
+
+        market = dict(
+            zip(
+                market_columns,
+                market_row
+            )
+        )
+
+        cursor.close()
+
+    finally:
+        conn.close()
+
+    market["EmployeeBand"] = employee_band
+    market["PrimarySIC"] = selected_sic
+
+    industry_total = int(
+        market.get("IndustryCompanies") or 0
+    )
+    band_total = int(
+        market.get("SameEmployeeBand") or 0
+    )
+    accountant_industry = int(
+        market.get("AccountantIndustryClients") or 0
+    )
+    accountant_peer = int(
+        market.get("AccountantPeerClients") or 0
+    )
+
+    market["AccountantIndustryPenetrationPct"] = (
+        accountant_industry / industry_total * 100
+        if selected_accountant and industry_total
+        else None
+    )
+
+    market["AccountantPeerPenetrationPct"] = (
+        accountant_peer / band_total * 100
+        if selected_accountant and band_total
+        else None
+    )
+
+    # Add latest financial measures for the similar-company table.
+    if not peers.empty and "CompanyNumber" in peers.columns:
+
+        peer_numbers = [
+            str(value).strip()
+            for value in peers["CompanyNumber"].tolist()
+            if value is not None and str(value).strip()
+        ]
+
+        if peer_numbers:
+            placeholders = ", ".join(
+                ["%s"] * len(peer_numbers)
+            )
+
+            conn = get_connection()
+
+            try:
+                cursor = conn.cursor()
+
+                cursor.execute(
+                    f"""
+                    SELECT
+                        LTRIM(RTRIM(CRO)) AS CompanyNumber,
+                        LatestEmployees,
+                        LatestTurnover,
+                        LatestProfitBeforeTax,
+                        LatestCash,
+                        EmployeeGrowthPct,
+                        TurnoverGrowthPct
+                    FROM dbo.RD_AccountsComparison
+                    WHERE LTRIM(RTRIM(CRO)) IN ({placeholders})
+                    """,
+                    tuple(peer_numbers)
+                )
+
+                rows = cursor.fetchall()
+                columns = [
+                    column[0]
+                    for column in cursor.description
+                ]
+
+                financials = pd.DataFrame(
+                    rows,
+                    columns=columns
+                )
+
+                cursor.close()
+
+            finally:
+                conn.close()
+
+            if not financials.empty:
+                peers["CompanyNumber"] = peers[
+                    "CompanyNumber"
+                ].astype(str).str.strip()
+
+                financials["CompanyNumber"] = financials[
+                    "CompanyNumber"
+                ].astype(str).str.strip()
+
+                peers = peers.merge(
+                    financials,
+                    on="CompanyNumber",
+                    how="left"
+                )
+
+    return peers, market
+
+
+def create_peer_market_pdf(detail, peers, market):
+    """
+    Create a Rebel-branded peer and market profile PDF.
+    """
+
+    buffer = io.BytesIO()
+
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=13 * mm,
+        leftMargin=13 * mm,
+        topMargin=14 * mm,
+        bottomMargin=14 * mm
+    )
+
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        "PeerTitle",
+        parent=styles["Title"],
+        fontSize=19,
+        leading=23,
+        textColor=colors.HexColor("#222222"),
+        spaceAfter=3
+    )
+
+    subtitle_style = ParagraphStyle(
+        "PeerSubtitle",
+        parent=styles["Normal"],
+        fontSize=9,
+        leading=12,
+        textColor=colors.HexColor("#65a816"),
+        spaceAfter=10
+    )
+
+    heading_style = ParagraphStyle(
+        "PeerHeading",
+        parent=styles["Heading2"],
+        fontSize=12,
+        leading=15,
+        textColor=colors.HexColor("#222222"),
+        spaceBefore=8,
+        spaceAfter=6
+    )
+
+    normal_style = ParagraphStyle(
+        "PeerNormal",
+        parent=styles["BodyText"],
+        fontSize=8.5,
+        leading=11,
+        textColor=colors.HexColor("#333333")
+    )
+
+    story = []
+
+    story.append(
+        Paragraph(
+            "Rebel Data - Peer & Market Profile",
+            title_style
+        )
+    )
+
+    story.append(
+        Paragraph(
+            f"{display_value(detail.get('CompanyName'))} "
+            f"({display_value(detail.get('CompanyNumber'))})",
+            subtitle_style
+        )
+    )
+
+    market_rows = [
+        ["Measure", "Value"],
+        ["Primary industry / SIC", display_value(market.get("PrimarySIC"))],
+        ["Employee band", display_value(market.get("EmployeeBand"))],
+        ["Active companies in same industry", f"{int(market.get('IndustryCompanies') or 0):,}"],
+        ["Same employee band", f"{int(market.get('SameEmployeeBand') or 0):,}"],
+        ["Same county", f"{int(market.get('SameCounty') or 0):,}"],
+        ["Same county and employee band", f"{int(market.get('SameCountyBand') or 0):,}"],
+    ]
+
+    accountant = str(
+        detail.get("AccountantName") or ""
+    ).strip()
+
+    if accountant:
+        industry_pen = market.get(
+            "AccountantIndustryPenetrationPct"
+        )
+        peer_pen = market.get(
+            "AccountantPeerPenetrationPct"
+        )
+
+        market_rows.extend(
+            [
+                ["Identified accountant", accountant],
+                [
+                    "Accountant share of same industry",
+                    (
+                        f"{industry_pen:.2f}%"
+                        if industry_pen is not None
+                        else "Not available"
+                    )
+                ],
+                [
+                    "Accountant share of same industry + employee band",
+                    (
+                        f"{peer_pen:.2f}%"
+                        if peer_pen is not None
+                        else "Not available"
+                    )
+                ]
+            ]
+        )
+
+    story.append(
+        Paragraph(
+            "Market Profile",
+            heading_style
+        )
+    )
+
+    market_table = Table(
+        market_rows,
+        colWidths=[83 * mm, 92 * mm],
+        repeatRows=1
+    )
+
+    market_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#8bd02f")),
+                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#cccccc")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+
+    story.append(market_table)
+    story.append(Spacer(1, 5 * mm))
+
+    story.append(
+        Paragraph(
+            "Similar Companies",
+            heading_style
+        )
+    )
+
+    if peers is None or peers.empty:
+        story.append(
+            Paragraph(
+                "No suitable similar companies were found.",
+                normal_style
+            )
+        )
+    else:
+        peer_rows = [
+            [
+                "Company",
+                "Town",
+                "Employees",
+                "Turnover",
+                "Similarity"
+            ]
+        ]
+
+        for _, row in peers.head(15).iterrows():
+            peer_rows.append(
+                [
+                    str(row.get("CompanyName") or ""),
+                    str(row.get("PostTown") or ""),
+                    (
+                        f"{float(row.get('Employees')):,.0f}"
+                        if pd.notna(row.get("Employees"))
+                        else ""
+                    ),
+                    (
+                        format_financial_value(
+                            row.get("LatestTurnover")
+                        )
+                        if "LatestTurnover" in peers.columns
+                        else ""
+                    ),
+                    (
+                        f"{float(row.get('SimilarityScore')):.0f}%"
+                        if pd.notna(row.get("SimilarityScore"))
+                        else ""
+                    ),
+                ]
+            )
+
+        peer_table = Table(
+            peer_rows,
+            colWidths=[
+                67 * mm,
+                35 * mm,
+                23 * mm,
+                31 * mm,
+                20 * mm
+            ],
+            repeatRows=1
+        )
+
+        peer_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#8bd02f")),
+                    ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#cccccc")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 7),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ]
+            )
+        )
+
+        story.append(peer_table)
+
+    story.append(Spacer(1, 4 * mm))
+
+    story.append(
+        Paragraph(
+            "Similarity is calculated consistently from industry, employee band, "
+            "location and company category. Accountant penetration is an estimated "
+            "share based on accountant relationships identified in Rebel Data, not "
+            "a claim of total market share.",
+            normal_style
+        )
+    )
+
+    doc.build(story)
+
+    buffer.seek(0)
+
+    return buffer.getvalue()
+
+
+def show_peer_market_profile(detail):
+    """
+    Render peer companies and market profile below the selected company.
+    """
+
+    st.markdown("<hr>", unsafe_allow_html=True)
+
+    st.markdown(
+        '<div class="section-title">Similar Companies & Market Profile</div>',
+        unsafe_allow_html=True
+    )
+
+    st.caption(
+        "Peers are selected using Rebel's deterministic similarity logic, "
+        "not generated by the AI."
+    )
+
+    with st.spinner(
+        "Building peer and market profile..."
+    ):
+        peers, market = get_peer_market_profile(
+            detail,
+            peer_limit=25
+        )
+
+    if not market.get("PrimarySIC"):
+        st.info(
+            "A peer profile cannot be created because this company "
+            "does not currently have a usable SIC classification."
+        )
+        return
+
+    industry_count = int(
+        market.get("IndustryCompanies") or 0
+    )
+    band_count = int(
+        market.get("SameEmployeeBand") or 0
+    )
+    county_count = int(
+        market.get("SameCounty") or 0
+    )
+    county_band_count = int(
+        market.get("SameCountyBand") or 0
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    col1.metric(
+        "Same Industry",
+        f"{industry_count:,}"
+    )
+
+    col2.metric(
+        f"Employees {market.get('EmployeeBand')}",
+        f"{band_count:,}"
+    )
+
+    col3.metric(
+        "Same County",
+        f"{county_count:,}"
+    )
+
+    col4.metric(
+        "Same County + Size",
+        f"{county_band_count:,}"
+    )
+
+    st.markdown("### Market definition")
+
+    st.write(
+        f"**Primary industry:** {display_value(market.get('PrimarySIC'))}"
+    )
+
+    st.write(
+        f"**Employee band:** {display_value(market.get('EmployeeBand'))}"
+    )
+
+    accountant = str(
+        detail.get("AccountantName") or ""
+    ).strip()
+
+    if accountant:
+
+        st.markdown("### Accountant penetration")
+
+        industry_clients = int(
+            market.get("AccountantIndustryClients") or 0
+        )
+        peer_clients = int(
+            market.get("AccountantPeerClients") or 0
+        )
+
+        industry_pen = market.get(
+            "AccountantIndustryPenetrationPct"
+        )
+        peer_pen = market.get(
+            "AccountantPeerPenetrationPct"
+        )
+
+        p1, p2 = st.columns(2)
+
+        p1.metric(
+            "Same Industry",
+            (
+                f"{industry_pen:.2f}%"
+                if industry_pen is not None
+                else "N/A"
+            ),
+            delta=f"{industry_clients:,} identified clients"
+        )
+
+        p2.metric(
+            "Same Industry + Size",
+            (
+                f"{peer_pen:.2f}%"
+                if peer_pen is not None
+                else "N/A"
+            ),
+            delta=f"{peer_clients:,} identified clients"
+        )
+
+        st.caption(
+            "Penetration is based on companies where Rebel has identified "
+            f"{accountant} as the accountant. It is an indicative Rebel Data "
+            "measure rather than a claim of the firm's total market share."
+        )
+
+    st.markdown("### Most Similar Companies")
+
+    if peers.empty:
+        st.info(
+            "No suitable similar active companies were found."
+        )
+    else:
+
+        display_df = peers.copy()
+
+        if "SimilarityScore" in display_df.columns:
+            display_df["Similarity"] = display_df[
+                "SimilarityScore"
+            ].apply(
+                lambda value: (
+                    f"{float(value):.0f}%"
+                    if pd.notna(value)
+                    else ""
+                )
+            )
+
+        if "LatestTurnover" in display_df.columns:
+            display_df["Turnover"] = display_df[
+                "LatestTurnover"
+            ].apply(
+                lambda value: (
+                    format_financial_value(value)
+                    if pd.notna(value)
+                    else ""
+                )
+            )
+
+        if "LatestProfitBeforeTax" in display_df.columns:
+            display_df["Profit Before Tax"] = display_df[
+                "LatestProfitBeforeTax"
+            ].apply(
+                lambda value: (
+                    format_financial_value(value)
+                    if pd.notna(value)
+                    else ""
+                )
+            )
+
+        desired_columns = [
+            "CompanyNumber",
+            "CompanyName",
+            "PostTown",
+            "County",
+            "Employees",
+            "Turnover",
+            "Profit Before Tax",
+            "AccountantName",
+            "Similarity"
+        ]
+
+        desired_columns = [
+            column
+            for column in desired_columns
+            if column in display_df.columns
+        ]
+
+        st.dataframe(
+            display_df[desired_columns],
+            use_container_width=True,
+            hide_index=True,
+            height=500
+        )
+
+        peer_csv = (
+            display_df[desired_columns]
+            .to_csv(index=False)
+            .encode("utf-8")
+        )
+
+        st.download_button(
+            "DOWNLOAD SIMILAR COMPANIES CSV",
+            data=peer_csv,
+            file_name=(
+                f"similar_companies_"
+                f"{detail.get('CompanyNumber')}.csv"
+            ),
+            mime="text/csv",
+            key=(
+                f"similar_companies_csv_"
+                f"{detail.get('CompanyNumber')}"
+            )
+        )
+
+    try:
+        peer_pdf = create_peer_market_pdf(
+            detail,
+            peers,
+            market
+        )
+
+        safe_company_name = re.sub(
+            r"[^A-Za-z0-9_-]+",
+            "_",
+            str(
+                detail.get("CompanyName")
+                or detail.get("CompanyNumber")
+            )
+        ).strip("_")
+
+        st.download_button(
+            "DOWNLOAD PEER & MARKET PROFILE PDF",
+            data=peer_pdf,
+            file_name=(
+                f"Rebel_Peer_Market_Profile_"
+                f"{safe_company_name}_"
+                f"{detail.get('CompanyNumber')}.pdf"
+            ),
+            mime="application/pdf",
+            key=(
+                f"peer_market_pdf_"
+                f"{detail.get('CompanyNumber')}"
+            )
+        )
+
+    except Exception as peer_pdf_error:
+        st.warning(
+            "The peer and market profile PDF could not be generated."
+        )
+        st.exception(peer_pdf_error)
+
+
 def show_ask_rebel_company_detail(selected_number):
     """Show the same core company intelligence used in Company Search."""
 
@@ -1130,6 +2012,20 @@ def show_ask_rebel_company_detail(selected_number):
             "could not be retrieved."
         )
         st.exception(comparison_error)
+
+    try:
+        show_peer_market_profile(detail)
+    except Exception as peer_profile_error:
+        st.markdown("<hr>", unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-title">Similar Companies & Market Profile</div>',
+            unsafe_allow_html=True
+        )
+        st.warning(
+            "The company details loaded, but the peer and market profile "
+            "could not be generated."
+        )
+        st.exception(peer_profile_error)
 
     try:
         pdf_bytes = create_company_report_pdf(
