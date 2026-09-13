@@ -2387,6 +2387,48 @@ def show_ask_rebel_page():
             dataset = plan.get("dataset")
 
             if (
+                dataset == "accountants"
+                and "AccountantName" in results.columns
+            ):
+
+                st.markdown("<hr>", unsafe_allow_html=True)
+
+                st.markdown(
+                    """
+                    <div class="section-title">
+                        Accountancy Profile
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+                accountant_choices = [
+                    str(value).strip()
+                    for value in results["AccountantName"].tolist()
+                    if value is not None
+                    and str(value).strip()
+                ]
+
+                selected_ask_accountant = st.selectbox(
+                    "Select an accountant from the Ask Rebel results",
+                    ["Select an accountant..."] + accountant_choices,
+                    key="ask_rebel_accountant_profile_choice"
+                )
+
+                if selected_ask_accountant != "Select an accountant...":
+                    try:
+                        show_accountancy_profile(
+                            selected_ask_accountant,
+                            key_prefix="ask_rebel_accountancy_profile"
+                        )
+                    except Exception as profile_error:
+                        st.warning(
+                            "The accountant was selected, but the accountancy "
+                            "profile could not be generated."
+                        )
+                        st.exception(profile_error)
+
+            if (
                 dataset in {"companies", "prospects"}
                 and "CompanyNumber" in results.columns
                 and "CompanyName" in results.columns
@@ -5196,6 +5238,1231 @@ def create_accountant_report_pdf(
 # MAIN APP
 # ==================================================
 
+
+# ==================================================
+# ACCOUNTANCY INTELLIGENCE PROFILE
+# ==================================================
+
+def get_accountancy_profile(accountant_name):
+    """
+    Build a deterministic profile of an accountancy firm's identified
+    client portfolio using Rebel Data.
+
+    This intentionally uses SQL/Python rules rather than the LLM so that
+    the same accountant always produces the same profile.
+    """
+
+    accountant_name = str(accountant_name or "").strip()
+
+    if not accountant_name:
+        return None
+
+    conn = get_connection()
+
+    try:
+        cursor = conn.cursor()
+
+        # --------------------------------------------------
+        # Portfolio summary
+        # --------------------------------------------------
+        cursor.execute(
+            """
+            SELECT
+                COUNT_BIG(*) AS IdentifiedClients,
+                SUM(
+                    CASE
+                        WHEN CompanyStatus = 'Active' THEN 1
+                        ELSE 0
+                    END
+                ) AS ActiveClients,
+                AVG(
+                    TRY_CONVERT(
+                        DECIMAL(18,2),
+                        NULLIF(Employees, '')
+                    )
+                ) AS AvgEmployees,
+                SUM(
+                    CASE
+                        WHEN TRY_CONVERT(INT, NULLIF(Employees, '')) BETWEEN 1 AND 5
+                            THEN 1 ELSE 0
+                    END
+                ) AS Employees_1_5,
+                SUM(
+                    CASE
+                        WHEN TRY_CONVERT(INT, NULLIF(Employees, '')) BETWEEN 6 AND 10
+                            THEN 1 ELSE 0
+                    END
+                ) AS Employees_6_10,
+                SUM(
+                    CASE
+                        WHEN TRY_CONVERT(INT, NULLIF(Employees, '')) BETWEEN 11 AND 19
+                            THEN 1 ELSE 0
+                    END
+                ) AS Employees_11_19,
+                SUM(
+                    CASE
+                        WHEN TRY_CONVERT(INT, NULLIF(Employees, '')) BETWEEN 20 AND 49
+                            THEN 1 ELSE 0
+                    END
+                ) AS Employees_20_49,
+                SUM(
+                    CASE
+                        WHEN TRY_CONVERT(INT, NULLIF(Employees, '')) BETWEEN 50 AND 99
+                            THEN 1 ELSE 0
+                    END
+                ) AS Employees_50_99,
+                SUM(
+                    CASE
+                        WHEN TRY_CONVERT(INT, NULLIF(Employees, '')) BETWEEN 100 AND 249
+                            THEN 1 ELSE 0
+                    END
+                ) AS Employees_100_249,
+                SUM(
+                    CASE
+                        WHEN TRY_CONVERT(INT, NULLIF(Employees, '')) >= 250
+                            THEN 1 ELSE 0
+                    END
+                ) AS Employees_250_Plus
+            FROM dbo.vw_RebelCompanies
+            WHERE
+                LTRIM(RTRIM(AccountantName)) = %s
+            """,
+            (accountant_name,)
+        )
+
+        summary_row = cursor.fetchone()
+        summary_columns = [
+            column[0]
+            for column in cursor.description
+        ]
+
+        summary = dict(
+            zip(
+                summary_columns,
+                summary_row
+            )
+        )
+
+        # --------------------------------------------------
+        # R&D / referral summary
+        # --------------------------------------------------
+        cursor.execute(
+            """
+            SELECT TOP 1
+                TotalClients,
+                RDRelevantClients,
+                VeryHighRDClients,
+                HighRDClients,
+                MediumRDClients,
+                LowRDClients,
+                ContactNowClients,
+                ContactSoonClients,
+                NurtureClients,
+                LaterClients,
+                AvgRDOpportunityScore,
+                MaxRDOpportunityScore,
+                AvgSalesTimingScore,
+                ReferralOpportunityScore,
+                ReferralOpportunityBand,
+                SalesTimingBand,
+                RDServiceStatus,
+                LastCalculatedDate
+            FROM dbo.RD_AccountantOpportunities
+            WHERE AccountantName = %s
+            """,
+            (accountant_name,)
+        )
+
+        rd_row = cursor.fetchone()
+
+        if rd_row is not None:
+            rd_columns = [
+                column[0]
+                for column in cursor.description
+            ]
+            rd_summary = dict(
+                zip(
+                    rd_columns,
+                    rd_row
+                )
+            )
+        else:
+            rd_summary = {}
+
+        # --------------------------------------------------
+        # Top industries + Rebel universe penetration
+        # --------------------------------------------------
+        cursor.execute(
+            """
+            ;WITH ClientIndustry AS
+            (
+                SELECT
+                    SIC1,
+                    COUNT_BIG(*) AS ClientCount
+                FROM dbo.vw_RebelCompanies
+                WHERE
+                    LTRIM(RTRIM(AccountantName)) = %s
+                    AND CompanyStatus = 'Active'
+                    AND SIC1 IS NOT NULL
+                    AND LTRIM(RTRIM(SIC1)) <> ''
+                GROUP BY SIC1
+            ),
+            UniverseIndustry AS
+            (
+                SELECT
+                    SIC1,
+                    COUNT_BIG(*) AS UniverseCount
+                FROM dbo.vw_RebelCompanies
+                WHERE
+                    CompanyStatus = 'Active'
+                    AND SIC1 IS NOT NULL
+                    AND LTRIM(RTRIM(SIC1)) <> ''
+                GROUP BY SIC1
+            )
+            SELECT TOP 15
+                c.SIC1 AS [Industry],
+                c.ClientCount AS [Clients],
+                u.UniverseCount AS [Universe],
+                CAST(
+                    100.0 * c.ClientCount
+                    / NULLIF(u.UniverseCount, 0)
+                    AS DECIMAL(10,2)
+                ) AS [PenetrationPct]
+            FROM ClientIndustry c
+            JOIN UniverseIndustry u
+                ON u.SIC1 = c.SIC1
+            ORDER BY
+                c.ClientCount DESC,
+                c.SIC1
+            """,
+            (accountant_name,)
+        )
+
+        industry_rows = cursor.fetchall()
+        industry_columns = [
+            column[0]
+            for column in cursor.description
+        ]
+
+        industries = pd.DataFrame(
+            industry_rows,
+            columns=industry_columns
+        )
+
+        # --------------------------------------------------
+        # Employee band portfolio + penetration
+        # --------------------------------------------------
+        cursor.execute(
+            """
+            ;WITH UniverseBase AS
+            (
+                SELECT
+                    CASE
+                        WHEN TRY_CONVERT(INT, NULLIF(Employees, '')) BETWEEN 1 AND 5 THEN '1-5'
+                        WHEN TRY_CONVERT(INT, NULLIF(Employees, '')) BETWEEN 6 AND 10 THEN '6-10'
+                        WHEN TRY_CONVERT(INT, NULLIF(Employees, '')) BETWEEN 11 AND 19 THEN '11-19'
+                        WHEN TRY_CONVERT(INT, NULLIF(Employees, '')) BETWEEN 20 AND 49 THEN '20-49'
+                        WHEN TRY_CONVERT(INT, NULLIF(Employees, '')) BETWEEN 50 AND 99 THEN '50-99'
+                        WHEN TRY_CONVERT(INT, NULLIF(Employees, '')) BETWEEN 100 AND 249 THEN '100-249'
+                        WHEN TRY_CONVERT(INT, NULLIF(Employees, '')) >= 250 THEN '250+'
+                        ELSE 'Unknown'
+                    END AS EmployeeBand,
+                    AccountantName
+                FROM dbo.vw_RebelCompanies
+                WHERE CompanyStatus = 'Active'
+            ),
+            UniverseBands AS
+            (
+                SELECT
+                    EmployeeBand,
+                    COUNT_BIG(*) AS UniverseCount
+                FROM UniverseBase
+                GROUP BY EmployeeBand
+            ),
+            ClientBands AS
+            (
+                SELECT
+                    EmployeeBand,
+                    COUNT_BIG(*) AS ClientCount
+                FROM UniverseBase
+                WHERE LTRIM(RTRIM(AccountantName)) = %s
+                GROUP BY EmployeeBand
+            )
+            SELECT
+                u.EmployeeBand AS [Employee Band],
+                ISNULL(c.ClientCount, 0) AS [Clients],
+                u.UniverseCount AS [Universe],
+                CAST(
+                    100.0 * ISNULL(c.ClientCount, 0)
+                    / NULLIF(u.UniverseCount, 0)
+                    AS DECIMAL(10,3)
+                ) AS [PenetrationPct]
+            FROM UniverseBands u
+            LEFT JOIN ClientBands c
+                ON c.EmployeeBand = u.EmployeeBand
+            ORDER BY
+                CASE u.EmployeeBand
+                    WHEN '1-5' THEN 1
+                    WHEN '6-10' THEN 2
+                    WHEN '11-19' THEN 3
+                    WHEN '20-49' THEN 4
+                    WHEN '50-99' THEN 5
+                    WHEN '100-249' THEN 6
+                    WHEN '250+' THEN 7
+                    ELSE 8
+                END
+            """,
+            (accountant_name,)
+        )
+
+        band_rows = cursor.fetchall()
+        band_columns = [
+            column[0]
+            for column in cursor.description
+        ]
+
+        employee_bands = pd.DataFrame(
+            band_rows,
+            columns=band_columns
+        )
+
+        # --------------------------------------------------
+        # Geography profile
+        # --------------------------------------------------
+        cursor.execute(
+            """
+            SELECT TOP 15
+                CASE
+                    WHEN NULLIF(LTRIM(RTRIM(County)), '') IS NOT NULL
+                        THEN LTRIM(RTRIM(County))
+                    WHEN NULLIF(LTRIM(RTRIM(PostTown)), '') IS NOT NULL
+                        THEN LTRIM(RTRIM(PostTown))
+                    ELSE 'Unknown'
+                END AS [Area],
+                COUNT_BIG(*) AS [Clients]
+            FROM dbo.vw_RebelCompanies
+            WHERE
+                LTRIM(RTRIM(AccountantName)) = %s
+                AND CompanyStatus = 'Active'
+            GROUP BY
+                CASE
+                    WHEN NULLIF(LTRIM(RTRIM(County)), '') IS NOT NULL
+                        THEN LTRIM(RTRIM(County))
+                    WHEN NULLIF(LTRIM(RTRIM(PostTown)), '') IS NOT NULL
+                        THEN LTRIM(RTRIM(PostTown))
+                    ELSE 'Unknown'
+                END
+            ORDER BY
+                COUNT_BIG(*) DESC,
+                [Area]
+            """,
+            (accountant_name,)
+        )
+
+        geography_rows = cursor.fetchall()
+        geography_columns = [
+            column[0]
+            for column in cursor.description
+        ]
+
+        geography = pd.DataFrame(
+            geography_rows,
+            columns=geography_columns
+        )
+
+        # --------------------------------------------------
+        # Similar accountancy firms
+        # --------------------------------------------------
+        cursor.execute(
+            """
+            DECLARE
+                @TotalClients FLOAT,
+                @RDRelevant FLOAT,
+                @ReferralScore FLOAT,
+                @ContactNow FLOAT;
+
+            SELECT TOP 1
+                @TotalClients = ISNULL(TotalClients, 0),
+                @RDRelevant = ISNULL(RDRelevantClients, 0),
+                @ReferralScore = ISNULL(ReferralOpportunityScore, 0),
+                @ContactNow = ISNULL(ContactNowClients, 0)
+            FROM dbo.RD_AccountantOpportunities
+            WHERE AccountantName = %s;
+
+            SELECT TOP 10
+                AccountantName AS [Accountant],
+                TotalClients AS [Total Clients],
+                RDRelevantClients AS [R&D Relevant],
+                ContactNowClients AS [Contact Now],
+                ReferralOpportunityScore AS [Referral Score],
+                ReferralOpportunityBand AS [Opportunity],
+                CAST(
+                    ABS(ISNULL(TotalClients, 0) - @TotalClients)
+                    + ABS(ISNULL(RDRelevantClients, 0) - @RDRelevant) * 2
+                    + ABS(ISNULL(ContactNowClients, 0) - @ContactNow) * 2
+                    + ABS(ISNULL(ReferralOpportunityScore, 0) - @ReferralScore) * 3
+                    AS DECIMAL(18,2)
+                ) AS [Distance]
+            FROM dbo.RD_AccountantOpportunities
+            WHERE AccountantName <> %s
+            ORDER BY
+                [Distance],
+                ReferralOpportunityScore DESC,
+                AccountantName
+            """,
+            (
+                accountant_name,
+                accountant_name
+            )
+        )
+
+        similar_rows = cursor.fetchall()
+        similar_columns = [
+            column[0]
+            for column in cursor.description
+        ]
+
+        similar_accountants = pd.DataFrame(
+            similar_rows,
+            columns=similar_columns
+        )
+
+        # --------------------------------------------------
+        # White-space prospects:
+        # active businesses in the firm's strongest industries
+        # where this firm is not the identified accountant.
+        # --------------------------------------------------
+        cursor.execute(
+            """
+            ;WITH TopIndustries AS
+            (
+                SELECT TOP 5
+                    SIC1,
+                    COUNT_BIG(*) AS ClientCount
+                FROM dbo.vw_RebelCompanies
+                WHERE
+                    LTRIM(RTRIM(AccountantName)) = %s
+                    AND CompanyStatus = 'Active'
+                    AND SIC1 IS NOT NULL
+                    AND LTRIM(RTRIM(SIC1)) <> ''
+                GROUP BY SIC1
+                ORDER BY COUNT_BIG(*) DESC
+            )
+            SELECT TOP 100
+                c.CompanyNumber AS [Company Number],
+                c.CompanyName AS [Company Name],
+                c.PostTown AS [Town],
+                c.County AS [County],
+                TRY_CONVERT(INT, NULLIF(c.Employees, '')) AS [Employees],
+                c.SIC1 AS [Industry],
+                c.AccountantName AS [Current Accountant]
+            FROM dbo.vw_RebelCompanies c
+            JOIN TopIndustries t
+                ON t.SIC1 = c.SIC1
+            WHERE
+                c.CompanyStatus = 'Active'
+                AND (
+                    c.AccountantName IS NULL
+                    OR LTRIM(RTRIM(c.AccountantName)) = ''
+                    OR LTRIM(RTRIM(c.AccountantName)) <> %s
+                )
+            ORDER BY
+                TRY_CONVERT(INT, NULLIF(c.Employees, '')) DESC,
+                c.CompanyName
+            """,
+            (
+                accountant_name,
+                accountant_name
+            )
+        )
+
+        white_space_rows = cursor.fetchall()
+        white_space_columns = [
+            column[0]
+            for column in cursor.description
+        ]
+
+        white_space = pd.DataFrame(
+            white_space_rows,
+            columns=white_space_columns
+        )
+
+        cursor.close()
+
+    finally:
+        conn.close()
+
+    return {
+        "summary": summary,
+        "rd_summary": rd_summary,
+        "industries": industries,
+        "employee_bands": employee_bands,
+        "geography": geography,
+        "similar_accountants": similar_accountants,
+        "white_space": white_space
+    }
+
+
+def create_accountancy_profile_pdf(
+    accountant_name,
+    profile
+):
+    """
+    Create a Rebel-branded Accountancy Intelligence Profile PDF.
+    """
+
+    summary = profile.get("summary", {})
+    rd_summary = profile.get("rd_summary", {})
+    industries = profile.get(
+        "industries",
+        pd.DataFrame()
+    )
+    employee_bands = profile.get(
+        "employee_bands",
+        pd.DataFrame()
+    )
+    geography = profile.get(
+        "geography",
+        pd.DataFrame()
+    )
+    similar_accountants = profile.get(
+        "similar_accountants",
+        pd.DataFrame()
+    )
+
+    output = io.BytesIO()
+
+    doc = SimpleDocTemplate(
+        output,
+        pagesize=A4,
+        rightMargin=13 * mm,
+        leftMargin=13 * mm,
+        topMargin=14 * mm,
+        bottomMargin=14 * mm
+    )
+
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        "AccountancyProfileTitle",
+        parent=styles["Title"],
+        fontSize=19,
+        leading=23,
+        textColor=colors.HexColor("#222222"),
+        spaceAfter=4
+    )
+
+    subtitle_style = ParagraphStyle(
+        "AccountancyProfileSubtitle",
+        parent=styles["Normal"],
+        fontSize=9,
+        leading=12,
+        textColor=colors.HexColor("#65a816"),
+        spaceAfter=10
+    )
+
+    heading_style = ParagraphStyle(
+        "AccountancyProfileHeading",
+        parent=styles["Heading2"],
+        fontSize=12,
+        leading=15,
+        textColor=colors.HexColor("#222222"),
+        spaceBefore=8,
+        spaceAfter=6
+    )
+
+    normal_style = ParagraphStyle(
+        "AccountancyProfileBody",
+        parent=styles["BodyText"],
+        fontSize=8,
+        leading=11,
+        textColor=colors.HexColor("#333333")
+    )
+
+    story = [
+        Paragraph(
+            "Rebel Data - Accountancy Intelligence Profile",
+            title_style
+        ),
+        Paragraph(
+            str(accountant_name),
+            subtitle_style
+        )
+    ]
+
+    summary_rows = [
+        ["Measure", "Value"],
+        [
+            "Identified clients",
+            f"{int(summary.get('IdentifiedClients') or 0):,}"
+        ],
+        [
+            "Active identified clients",
+            f"{int(summary.get('ActiveClients') or 0):,}"
+        ],
+        [
+            "Average employees",
+            (
+                f"{float(summary.get('AvgEmployees')):,.1f}"
+                if summary.get("AvgEmployees") is not None
+                else "N/A"
+            )
+        ],
+        [
+            "R&D relevant clients",
+            f"{int(rd_summary.get('RDRelevantClients') or 0):,}"
+        ],
+        [
+            "Very High R&D clients",
+            f"{int(rd_summary.get('VeryHighRDClients') or 0):,}"
+        ],
+        [
+            "High R&D clients",
+            f"{int(rd_summary.get('HighRDClients') or 0):,}"
+        ],
+        [
+            "Contact Now clients",
+            f"{int(rd_summary.get('ContactNowClients') or 0):,}"
+        ],
+        [
+            "Referral opportunity score",
+            f"{int(rd_summary.get('ReferralOpportunityScore') or 0):,}/100"
+        ],
+        [
+            "Referral opportunity",
+            display_value(
+                rd_summary.get("ReferralOpportunityBand")
+            )
+        ]
+    ]
+
+    summary_table = Table(
+        summary_rows,
+        colWidths=[95 * mm, 80 * mm],
+        repeatRows=1
+    )
+
+    summary_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#8bd02f")),
+                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#cccccc")),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+
+    story.append(
+        Paragraph(
+            "Portfolio Overview",
+            heading_style
+        )
+    )
+    story.append(summary_table)
+    story.append(Spacer(1, 4 * mm))
+
+    if industries is not None and not industries.empty:
+        story.append(
+            Paragraph(
+                "Top Industries & Penetration",
+                heading_style
+            )
+        )
+
+        industry_rows = [
+            [
+                "Industry",
+                "Clients",
+                "Universe",
+                "Penetration"
+            ]
+        ]
+
+        for _, row in industries.head(10).iterrows():
+            industry_rows.append(
+                [
+                    Paragraph(
+                        str(row.get("Industry") or ""),
+                        normal_style
+                    ),
+                    f"{int(row.get('Clients') or 0):,}",
+                    f"{int(row.get('Universe') or 0):,}",
+                    (
+                        f"{float(row.get('PenetrationPct') or 0):.2f}%"
+                    )
+                ]
+            )
+
+        industry_table = Table(
+            industry_rows,
+            colWidths=[
+                100 * mm,
+                22 * mm,
+                28 * mm,
+                26 * mm
+            ],
+            repeatRows=1
+        )
+
+        industry_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#8bd02f")),
+                    ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#cccccc")),
+                    ("FONTSIZE", (0, 0), (-1, -1), 7),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ]
+            )
+        )
+
+        story.append(industry_table)
+        story.append(Spacer(1, 4 * mm))
+
+    if employee_bands is not None and not employee_bands.empty:
+        story.append(
+            Paragraph(
+                "Employee Size Profile",
+                heading_style
+            )
+        )
+
+        band_rows = [
+            [
+                "Employee Band",
+                "Clients",
+                "Universe",
+                "Penetration"
+            ]
+        ]
+
+        for _, row in employee_bands.iterrows():
+            band_rows.append(
+                [
+                    str(row.get("Employee Band") or ""),
+                    f"{int(row.get('Clients') or 0):,}",
+                    f"{int(row.get('Universe') or 0):,}",
+                    f"{float(row.get('PenetrationPct') or 0):.3f}%"
+                ]
+            )
+
+        band_table = Table(
+            band_rows,
+            colWidths=[
+                55 * mm,
+                38 * mm,
+                42 * mm,
+                40 * mm
+            ],
+            repeatRows=1
+        )
+
+        band_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#8bd02f")),
+                    ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#cccccc")),
+                    ("FONTSIZE", (0, 0), (-1, -1), 7),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ]
+            )
+        )
+
+        story.append(band_table)
+        story.append(Spacer(1, 4 * mm))
+
+    if geography is not None and not geography.empty:
+        story.append(
+            Paragraph(
+                "Geographic Concentration",
+                heading_style
+            )
+        )
+
+        geo_rows = [["Area", "Clients"]]
+
+        for _, row in geography.head(10).iterrows():
+            geo_rows.append(
+                [
+                    str(row.get("Area") or ""),
+                    f"{int(row.get('Clients') or 0):,}"
+                ]
+            )
+
+        geo_table = Table(
+            geo_rows,
+            colWidths=[
+                125 * mm,
+                50 * mm
+            ],
+            repeatRows=1
+        )
+
+        geo_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#8bd02f")),
+                    ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#cccccc")),
+                    ("FONTSIZE", (0, 0), (-1, -1), 7),
+                ]
+            )
+        )
+
+        story.append(geo_table)
+        story.append(Spacer(1, 4 * mm))
+
+    if similar_accountants is not None and not similar_accountants.empty:
+        story.append(
+            Paragraph(
+                "Comparable Accountancy Firms",
+                heading_style
+            )
+        )
+
+        similar_rows = [
+            [
+                "Accountant",
+                "Clients",
+                "R&D Relevant",
+                "Referral Score"
+            ]
+        ]
+
+        for _, row in similar_accountants.head(8).iterrows():
+            similar_rows.append(
+                [
+                    Paragraph(
+                        str(row.get("Accountant") or ""),
+                        normal_style
+                    ),
+                    f"{int(row.get('Total Clients') or 0):,}",
+                    f"{int(row.get('R&D Relevant') or 0):,}",
+                    f"{int(row.get('Referral Score') or 0):,}"
+                ]
+            )
+
+        similar_table = Table(
+            similar_rows,
+            colWidths=[
+                95 * mm,
+                28 * mm,
+                30 * mm,
+                25 * mm
+            ],
+            repeatRows=1
+        )
+
+        similar_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#8bd02f")),
+                    ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#cccccc")),
+                    ("FONTSIZE", (0, 0), (-1, -1), 7),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ]
+            )
+        )
+
+        story.append(similar_table)
+
+    story.append(Spacer(1, 5 * mm))
+
+    story.append(
+        Paragraph(
+            "Portfolio and penetration figures are based on accountancy "
+            "relationships identified in Rebel Data. They should be treated "
+            "as indicative market intelligence rather than a complete statement "
+            "of an accountancy firm's client base or market share.",
+            normal_style
+        )
+    )
+
+    doc.build(story)
+
+    output.seek(0)
+
+    return output.getvalue()
+
+
+def show_accountancy_profile(
+    accountant_name,
+    compact=False,
+    key_prefix="accountancy_profile"
+):
+    """
+    Render accountancy portfolio profiling, market penetration,
+    comparable firms and white-space prospects.
+    """
+
+    st.markdown("<hr>", unsafe_allow_html=True)
+
+    st.markdown(
+        '<div class="section-title">Accountancy Intelligence Profile</div>',
+        unsafe_allow_html=True
+    )
+
+    st.caption(
+        "Portfolio profiling is calculated from accountancy relationships "
+        "identified in Rebel Data."
+    )
+
+    with st.spinner(
+        "Profiling accountancy portfolio..."
+    ):
+        profile = get_accountancy_profile(
+            accountant_name
+        )
+
+    if not profile:
+        st.info(
+            "No profile could be created for this accountant."
+        )
+        return
+
+    summary = profile["summary"]
+    rd_summary = profile["rd_summary"]
+    industries = profile["industries"]
+    employee_bands = profile["employee_bands"]
+    geography = profile["geography"]
+    similar_accountants = profile[
+        "similar_accountants"
+    ]
+    white_space = profile["white_space"]
+
+    identified_clients = int(
+        summary.get("IdentifiedClients") or 0
+    )
+    active_clients = int(
+        summary.get("ActiveClients") or 0
+    )
+    avg_employees = summary.get(
+        "AvgEmployees"
+    )
+    rd_relevant = int(
+        rd_summary.get("RDRelevantClients") or 0
+    )
+    contact_now = int(
+        rd_summary.get("ContactNowClients") or 0
+    )
+    referral_score = int(
+        rd_summary.get("ReferralOpportunityScore") or 0
+    )
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+
+    c1.metric(
+        "IDENTIFIED CLIENTS",
+        f"{identified_clients:,}"
+    )
+
+    c2.metric(
+        "ACTIVE CLIENTS",
+        f"{active_clients:,}"
+    )
+
+    c3.metric(
+        "AVG EMPLOYEES",
+        (
+            f"{float(avg_employees):,.1f}"
+            if avg_employees is not None
+            else "N/A"
+        )
+    )
+
+    c4.metric(
+        "R&D RELEVANT",
+        f"{rd_relevant:,}"
+    )
+
+    c5.metric(
+        "CONTACT NOW",
+        f"{contact_now:,}"
+    )
+
+    c6.metric(
+        "REFERRAL SCORE",
+        f"{referral_score:,}/100"
+    )
+
+    # --------------------------------------------------
+    # Industry profile
+    # --------------------------------------------------
+    st.markdown("### Industry Profile & Market Penetration")
+
+    if industries.empty:
+        st.info(
+            "No industry profile is currently available."
+        )
+    else:
+        industry_display = industries.copy()
+
+        industry_display["Penetration"] = industry_display[
+            "PenetrationPct"
+        ].apply(
+            lambda x: (
+                f"{float(x):.2f}%"
+                if pd.notna(x)
+                else ""
+            )
+        )
+
+        industry_display = industry_display[
+            [
+                "Industry",
+                "Clients",
+                "Universe",
+                "Penetration"
+            ]
+        ]
+
+        st.dataframe(
+            industry_display,
+            use_container_width=True,
+            hide_index=True,
+            height=390
+        )
+
+        strongest = industries.sort_values(
+            ["PenetrationPct", "Clients"],
+            ascending=[False, False]
+        ).iloc[0]
+
+        largest = industries.sort_values(
+            ["Clients", "PenetrationPct"],
+            ascending=[False, False]
+        ).iloc[0]
+
+        i1, i2 = st.columns(2)
+
+        i1.metric(
+            "LARGEST CLIENT SECTOR",
+            f"{int(largest['Clients']):,} clients"
+        )
+
+        i1.caption(
+            str(largest["Industry"])
+        )
+
+        i2.metric(
+            "STRONGEST PENETRATION",
+            f"{float(strongest['PenetrationPct']):.2f}%"
+        )
+
+        i2.caption(
+            str(strongest["Industry"])
+        )
+
+    # --------------------------------------------------
+    # Employee profile
+    # --------------------------------------------------
+    st.markdown("### Client Size Profile")
+
+    if not employee_bands.empty:
+        band_display = employee_bands.copy()
+
+        band_display["Penetration"] = band_display[
+            "PenetrationPct"
+        ].apply(
+            lambda x: (
+                f"{float(x):.3f}%"
+                if pd.notna(x)
+                else ""
+            )
+        )
+
+        st.dataframe(
+            band_display[
+                [
+                    "Employee Band",
+                    "Clients",
+                    "Universe",
+                    "Penetration"
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True
+        )
+
+    # --------------------------------------------------
+    # Geography
+    # --------------------------------------------------
+    st.markdown("### Geographic Profile")
+
+    if geography.empty:
+        st.info(
+            "No geographic profile is currently available."
+        )
+    else:
+        total_geo = max(
+            int(geography["Clients"].sum()),
+            1
+        )
+
+        geo_display = geography.copy()
+
+        geo_display["% of Portfolio"] = (
+            geo_display["Clients"]
+            / total_geo
+            * 100
+        ).apply(
+            lambda x: f"{x:.1f}%"
+        )
+
+        st.dataframe(
+            geo_display[
+                [
+                    "Area",
+                    "Clients",
+                    "% of Portfolio"
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True,
+            height=360
+        )
+
+    # --------------------------------------------------
+    # R&D opportunity profile
+    # --------------------------------------------------
+    st.markdown("### R&D Opportunity Profile")
+
+    r1, r2, r3, r4 = st.columns(4)
+
+    r1.metric(
+        "VERY HIGH",
+        f"{int(rd_summary.get('VeryHighRDClients') or 0):,}"
+    )
+
+    r2.metric(
+        "HIGH",
+        f"{int(rd_summary.get('HighRDClients') or 0):,}"
+    )
+
+    r3.metric(
+        "CONTACT SOON",
+        f"{int(rd_summary.get('ContactSoonClients') or 0):,}"
+    )
+
+    r4.metric(
+        "AVG R&D SCORE",
+        (
+            f"{float(rd_summary.get('AvgRDOpportunityScore')):.1f}"
+            if rd_summary.get("AvgRDOpportunityScore") is not None
+            else "N/A"
+        )
+    )
+
+    # --------------------------------------------------
+    # Similar practices
+    # --------------------------------------------------
+    st.markdown("### Similar Accountancy Firms")
+
+    if similar_accountants.empty:
+        st.info(
+            "No comparable accountancy firms are currently available."
+        )
+    else:
+        st.dataframe(
+            similar_accountants.drop(
+                columns=["Distance"],
+                errors="ignore"
+            ),
+            use_container_width=True,
+            hide_index=True,
+            height=360
+        )
+
+    # --------------------------------------------------
+    # White space
+    # --------------------------------------------------
+    st.markdown("### Market White Space")
+
+    st.write(
+        "These are active businesses in the firm's strongest identified "
+        "client sectors where this accountant is not currently recorded as "
+        "the accountant in Rebel Data."
+    )
+
+    if white_space.empty:
+        st.info(
+            "No white-space businesses were found for the current profile."
+        )
+    else:
+        st.write(
+            f"Showing **{len(white_space):,}** potential white-space businesses."
+        )
+
+        st.dataframe(
+            white_space,
+            use_container_width=True,
+            hide_index=True,
+            height=450
+        )
+
+        white_space_csv = (
+            white_space
+            .to_csv(index=False)
+            .encode("utf-8")
+        )
+
+        st.download_button(
+            "DOWNLOAD WHITE SPACE CSV",
+            data=white_space_csv,
+            file_name=(
+                "accountancy_white_space_"
+                + re.sub(
+                    r"[^A-Za-z0-9_-]+",
+                    "_",
+                    accountant_name
+                ).strip("_")
+                + ".csv"
+            ),
+            mime="text/csv",
+            key=f"{key_prefix}_white_space_csv"
+        )
+
+    # --------------------------------------------------
+    # Profile PDF
+    # --------------------------------------------------
+    try:
+        profile_pdf = create_accountancy_profile_pdf(
+            accountant_name,
+            profile
+        )
+
+        safe_accountant_name = re.sub(
+            r"[^A-Za-z0-9_-]+",
+            "_",
+            accountant_name
+        ).strip("_")
+
+        st.download_button(
+            "DOWNLOAD ACCOUNTANCY PROFILE PDF",
+            data=profile_pdf,
+            file_name=(
+                f"Rebel_Accountancy_Profile_"
+                f"{safe_accountant_name}.pdf"
+            ),
+            mime="application/pdf",
+            key=f"{key_prefix}_profile_pdf"
+        )
+
+    except Exception as pdf_error:
+        st.warning(
+            "The accountancy profile loaded, but the profile PDF "
+            "could not be generated."
+        )
+        st.exception(pdf_error)
+
+
 def get_rd_referral_summary():
 
     conn = get_connection()
@@ -7123,6 +8390,28 @@ def show_rd_referral_page():
             )
 
             top_clients = pd.DataFrame()
+
+
+        # --------------------------------------------------
+        # ACCOUNTANCY INTELLIGENCE PROFILE
+        # --------------------------------------------------
+
+        try:
+            show_accountancy_profile(
+                selected_accountant,
+                key_prefix="rd_accountancy_profile"
+            )
+        except Exception as profile_error:
+            st.markdown("<hr>", unsafe_allow_html=True)
+            st.markdown(
+                '<div class="section-title">Accountancy Intelligence Profile</div>',
+                unsafe_allow_html=True
+            )
+            st.warning(
+                "The accountant detail loaded, but the accountancy profile "
+                "could not be generated."
+            )
+            st.exception(profile_error)
 
 
         # --------------------------------------------------
