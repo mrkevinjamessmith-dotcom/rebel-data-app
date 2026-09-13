@@ -323,9 +323,14 @@ ASK_REBEL_DATASETS = {
 }
 
 
-def ask_rebel_plan(question):
+def ask_rebel_plan(question, previous_plan=None):
     """
     Convert a natural-language question into a restricted query plan.
+
+    If previous_plan is supplied, the user's message may be a follow-up
+    such as "only ones with more than 20 employees" or
+    "sort those by turnover". The model must return a complete revised plan.
+
     The model does not write or execute SQL.
     """
 
@@ -397,7 +402,7 @@ JSON format:
   "interpretation": "short plain English description of how you interpreted the question"
 }
 
-Rules:
+General rules:
 - Use count when the user asks how many, number of, count or total companies/firms.
 - Otherwise use list.
 - Maximum limit is 100.
@@ -412,11 +417,45 @@ Rules:
 - "Contact Now" is SalesTimingBand = "Contact Now".
 - Do not invent fields.
 - Do not create SQL.
+
+Follow-up rules:
+- If a previous plan is supplied, treat it as the starting point.
+- Return a COMPLETE revised plan, not just the changed part.
+- "those", "them", "these", "only", "now", "also", "instead" and similar
+  wording normally refer to the previous result set.
+- "only ones with more than 20 employees" should KEEP all existing filters
+  and add the employee filter.
+- "sort those by turnover" should KEEP the existing filters and change the sort.
+- "show me the top 5" should keep filters, use operation=list and set limit=5.
+- "how many of those?" should keep filters and set operation=count.
+- "show them" after a count should keep filters and set operation=list.
+- If the user clearly starts a different search, create a new plan.
+- If a follow-up requests a field that only exists in another dataset,
+  move to the appropriate dataset where sensible and preserve compatible filters.
+- For prospects, "strongest", "best" or "top opportunities" means sort first by
+  RDOpportunityScore descending, then SalesTimingScore descending.
+- For accountants, "strongest", "best" or "top opportunities" means sort first by
+  ReferralOpportunityScore descending, then ContactNowClients descending.
+- For general companies, do not invent a "strength" measure. If the user asks
+  for strongest companies without mentioning R&D, prefer moving to prospects
+  only if the previous context is clearly about R&D; otherwise preserve the
+  company search and sort by Employees descending as a simple size proxy,
+  explaining that interpretation.
 """
+
+    previous_context = ""
+
+    if previous_plan:
+        previous_context = (
+            "\n\nPREVIOUS QUERY PLAN:\n"
+            + json.dumps(previous_plan, ensure_ascii=False, default=str)
+            + "\n\nThe user's new message may be a follow-up. "
+              "Apply the follow-up rules and return the full revised plan."
+        )
 
     response = client.responses.create(
         model="gpt-5.6-luna",
-        instructions=system_prompt,
+        instructions=system_prompt + previous_context,
         input=question
     )
 
@@ -1145,12 +1184,13 @@ def show_ask_rebel_page():
             padding:14px 18px;
             border-radius:6px;
             color:#d9d9d9;
-            margin-bottom:22px;
+            margin-bottom:18px;
             line-height:1.6;
         ">
-            Try: <b style="color:white;">How many active companies are there in Gloucestershire?</b><br>
-            Or: <b style="color:white;">Show high R&amp;D opportunity companies with turnover above £2m.</b><br>
-            Or: <b style="color:white;">Which accountants have the most Very High R&amp;D clients?</b>
+            Start with a search, then refine it naturally.<br>
+            Example: <b style="color:white;">Show high R&amp;D opportunity companies in Gloucestershire</b><br>
+            Then: <b style="color:white;">Only ones with more than 20 employees</b><br>
+            Then: <b style="color:white;">Sort those by turnover</b>
         </div>
         """,
         unsafe_allow_html=True
@@ -1176,19 +1216,91 @@ def show_ask_rebel_page():
         unsafe_allow_html=True
     )
 
-    with st.form("ask_rebel_form"):
+    # -------------------------
+    # Conversation controls
+    # -------------------------
+    control_col1, control_col2 = st.columns([1.2, 5])
+
+    with control_col1:
+        if st.button(
+            "NEW SEARCH",
+            key="ask_rebel_new_search",
+            use_container_width=True
+        ):
+            st.session_state["ask_rebel_question"] = None
+            st.session_state["ask_rebel_plan"] = None
+            st.session_state["ask_rebel_results"] = None
+            st.session_state["ask_rebel_generated_sql"] = None
+            st.session_state["ask_rebel_selected_company"] = None
+            st.session_state["ask_rebel_conversation"] = []
+            st.rerun()
+
+    conversation = st.session_state.get(
+        "ask_rebel_conversation",
+        []
+    )
+
+    if conversation:
+        with st.expander(
+            f"Conversation ({len(conversation)} messages)",
+            expanded=False
+        ):
+            for message in conversation:
+                role = message.get("role")
+
+                if role == "user":
+                    st.markdown(
+                        f"**You:** {message.get('text', '')}"
+                    )
+                else:
+                    st.markdown(
+                        f"**Ask Rebel:** {message.get('text', '')}"
+                    )
+
+    # -------------------------
+    # Ask / follow-up form
+    # -------------------------
+    has_existing_search = (
+        st.session_state.get("ask_rebel_plan") is not None
+    )
+
+    form_label = (
+        "Ask a follow-up question"
+        if has_existing_search
+        else "Ask Rebel a question"
+    )
+
+    placeholder = (
+        "e.g. Only ones with more than 20 employees"
+        if has_existing_search
+        else "e.g. Find active manufacturing companies in Gloucestershire with more than 20 employees"
+    )
+
+    with st.form(
+        "ask_rebel_form",
+        clear_on_submit=True
+    ):
 
         question = st.text_area(
             "Ask Rebel a question",
-            value=st.session_state.get("ask_rebel_question") or "",
-            placeholder="e.g. Find active manufacturing companies in Gloucestershire with more than 20 employees",
-            height=110
+            placeholder=placeholder,
+            height=100,
+            label_visibility="collapsed"
         )
 
         ask_clicked = st.form_submit_button(
             "ASK REBEL"
         )
 
+    if has_existing_search:
+        st.caption(
+            "Ask Rebel will treat this as a follow-up to the current result set. "
+            "Use NEW SEARCH to start again."
+        )
+
+    # -------------------------
+    # Execute a question
+    # -------------------------
     if ask_clicked:
 
         question = (question or "").strip()
@@ -1198,19 +1310,69 @@ def show_ask_rebel_page():
         else:
             try:
 
+                previous_plan = st.session_state.get(
+                    "ask_rebel_plan"
+                )
+
                 with st.spinner(
                     "Ask Rebel is interpreting your question..."
                 ):
 
-                    plan = ask_rebel_plan(question)
+                    plan = ask_rebel_plan(
+                        question,
+                        previous_plan=previous_plan
+                    )
 
-                    results, generated_sql = run_ask_rebel_query(plan)
+                    results, generated_sql = run_ask_rebel_query(
+                        plan
+                    )
 
                 st.session_state["ask_rebel_question"] = question
                 st.session_state["ask_rebel_plan"] = plan
                 st.session_state["ask_rebel_results"] = results
                 st.session_state["ask_rebel_generated_sql"] = generated_sql
                 st.session_state["ask_rebel_selected_company"] = None
+
+                conversation = st.session_state.get(
+                    "ask_rebel_conversation",
+                    []
+                )
+
+                conversation.append(
+                    {
+                        "role": "user",
+                        "text": question
+                    }
+                )
+
+                if plan.get("operation") == "count":
+                    result_value = (
+                        int(results.iloc[0, 0])
+                        if len(results) > 0
+                        else 0
+                    )
+
+                    reply_text = (
+                        f"{plan.get('interpretation', 'Query completed.')} "
+                        f"Result: {result_value:,}."
+                    )
+                else:
+                    reply_text = (
+                        f"{plan.get('interpretation', 'Query completed.')} "
+                        f"I found {len(results):,} matching records."
+                    )
+
+                conversation.append(
+                    {
+                        "role": "assistant",
+                        "text": reply_text
+                    }
+                )
+
+                # Keep session history compact.
+                st.session_state["ask_rebel_conversation"] = (
+                    conversation[-20:]
+                )
 
                 log_activity(
                     "ASK_REBEL",
@@ -1221,6 +1383,8 @@ def show_ask_rebel_page():
                         else len(results)
                     )
                 )
+
+                st.rerun()
 
             except json.JSONDecodeError:
                 st.error(
@@ -1234,9 +1398,14 @@ def show_ask_rebel_page():
                 )
                 st.exception(e)
 
+    # -------------------------
+    # Current result
+    # -------------------------
     plan = st.session_state.get("ask_rebel_plan")
     results = st.session_state.get("ask_rebel_results")
-    generated_sql = st.session_state.get("ask_rebel_generated_sql")
+    generated_sql = st.session_state.get(
+        "ask_rebel_generated_sql"
+    )
 
     if plan is None or results is None:
         return
@@ -1246,7 +1415,28 @@ def show_ask_rebel_page():
     st.markdown(
         """
         <div class="section-title">
-            Rebel Answer
+            Current Result
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    interpretation = plan.get(
+        "interpretation",
+        "No interpretation was supplied."
+    )
+
+    st.markdown(
+        f"""
+        <div style="
+            background:#333335;
+            padding:12px 16px;
+            border-radius:6px;
+            margin-bottom:16px;
+            color:#d9d9d9;
+        ">
+            <b style="color:white;">How Rebel interpreted this:</b>
+            {interpretation}
         </div>
         """,
         unsafe_allow_html=True
@@ -1263,6 +1453,10 @@ def show_ask_rebel_page():
         st.metric(
             "RESULT",
             f"{count_value:,}"
+        )
+
+        st.caption(
+            "You can now ask a follow-up such as 'show them' or add another filter."
         )
 
     else:
@@ -1333,7 +1527,8 @@ def show_ask_rebel_page():
                     for idx, label in enumerate(choice_labels):
                         if (
                             label != "Select a company..."
-                            and company_choices.get(label) == selected_number_state
+                            and company_choices.get(label)
+                            == selected_number_state
                         ):
                             default_index = idx
                             break
@@ -1347,14 +1542,18 @@ def show_ask_rebel_page():
 
                 if detail_choice != "Select a company...":
 
-                    selected_number = company_choices[detail_choice]
+                    selected_number = company_choices[
+                        detail_choice
+                    ]
 
                     st.session_state[
                         "ask_rebel_selected_company"
                     ] = selected_number
 
                     try:
-                        show_ask_rebel_company_detail(selected_number)
+                        show_ask_rebel_company_detail(
+                            selected_number
+                        )
                     except Exception as e:
                         st.error(
                             "The company was selected, but the full company detail could not be loaded."
@@ -1365,14 +1564,6 @@ def show_ask_rebel_page():
             st.info(
                 "No records matched the question as interpreted."
             )
-
-    interpretation = plan.get(
-        "interpretation",
-        "No interpretation was supplied."
-    )
-
-    st.markdown("### How Rebel interpreted your question")
-    st.write(interpretation)
 
     with st.expander("Technical details"):
 
@@ -6482,7 +6673,8 @@ additional_defaults = {
     "ask_rebel_plan": None,
     "ask_rebel_results": None,
     "ask_rebel_generated_sql": None,
-    "ask_rebel_selected_company": None
+    "ask_rebel_selected_company": None,
+    "ask_rebel_conversation": []
 }
 
 for key, value in additional_defaults.items():
