@@ -4,3 +4,4 @@ pymssql
 requests
 matplotlib
 reportlab
+openai
