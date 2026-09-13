@@ -706,6 +706,26 @@ def show_ask_rebel_page():
         unsafe_allow_html=True
     )
 
+    st.markdown(
+        """
+        <style>
+        /* Ask Rebel question box only */
+        div[data-testid="stForm"]:has(textarea[aria-label="Ask Rebel a question"]) textarea {
+            color: #000000 !important;
+            background-color: #ffffff !important;
+            -webkit-text-fill-color: #000000 !important;
+        }
+
+        div[data-testid="stForm"]:has(textarea[aria-label="Ask Rebel a question"]) textarea::placeholder {
+            color: #777777 !important;
+            -webkit-text-fill-color: #777777 !important;
+            opacity: 1 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
     with st.form("ask_rebel_form"):
 
         question = st.text_area(
